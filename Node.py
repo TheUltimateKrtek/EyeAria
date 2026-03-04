@@ -200,6 +200,8 @@ class Node(abc.ABC):
             "id": self.id,
             "x": self.x,
             "y": self.y,
+            "width": self.width,   # Added persistence for dimensions
+            "height": self.height, # Added persistence for dimensions
             "collapsed": self.collapsed,
             "subscribers": [sub.save() for sub in self.subscribers]
         }
@@ -215,13 +217,16 @@ class Node(abc.ABC):
         instance.id = data.get("id", str(uuid.uuid4()))
         instance.x = data.get("x", instance.x)
         instance.y = data.get("y", instance.y)
-        instance.collapsed = data.get("collapsed", True)
+        # Restore dimensions
+        instance.width = data.get("width", instance.width)
+        instance.height = data.get("height", instance.height)
+        instance.collapsed = data.get("collapsed", False)
+        
         instance._load_config(data)
         
         for sub_data in data.get("subscribers", []):
             child = Node.load(sub_data)
             if child: instance.add_subscriber(child)
         return instance
-
     @abc.abstractmethod
     def _load_config(self, data: dict): pass

@@ -243,10 +243,42 @@ class PipelineApp:
         if not self.root_node:
             ui.notify("Nothing to export!", color='warning')
             return
-        pipeline_data = self.root_node.save()
-        content = json.dumps(pipeline_data, indent=2)
+        
+        # Wrap the node tree and viewport state together
+        full_config = {
+            "viewport": {
+                "pan_x": self.pan_x,
+                "pan_y": self.pan_y,
+                "zoom": self.zoom
+            },
+            "root": self.root_node.save()
+        }
+        content = json.dumps(full_config, indent=2)
         ui.download(content.encode(), "full_pipeline_config.json")
         ui.notify("Entire pipeline exported.")
+
+    async def apply_pipeline_config(self, event, dialog):
+        try:
+            binary_data = await event.file.read()
+            data = json.loads(binary_data.decode('utf-8'))
+            
+            # Handle legacy files (no 'root' key) vs new files
+            pipeline_data = data.get("root", data)
+            viewport_data = data.get("viewport", {})
+
+            if self.root_node: self.root_node.stop()
+            self.root_node = Node.load(pipeline_data)
+            
+            # Restore Viewport
+            self.pan_x = viewport_data.get("pan_x", 0)
+            self.pan_y = viewport_data.get("pan_y", 0)
+            self.zoom = viewport_data.get("zoom", 1.0)
+
+            dialog.close()
+            self.refresh_ui()
+            ui.notify("Pipeline and Viewport restored!", color='green')
+        except Exception as e:
+            ui.notify(f"Failed to import pipeline: {e}", color='red')
 
     def import_pipeline(self):
         with ui.dialog() as dialog, ui.card().classes('p-4'):
@@ -254,18 +286,6 @@ class PipelineApp:
             ui.upload(on_upload=lambda e: self.apply_pipeline_config(e, dialog), 
                     auto_upload=True, label="Select Pipeline JSON").classes('w-full')
         dialog.open()
-
-    async def apply_pipeline_config(self, event, dialog):
-        try:
-            binary_data = await event.file.read()
-            pipeline_data = json.loads(binary_data.decode('utf-8'))
-            if self.root_node: self.root_node.stop()
-            self.root_node = Node.load(pipeline_data)
-            dialog.close()
-            self.refresh_ui()
-            ui.notify("Pipeline imported successfully!", color='green')
-        except Exception as e:
-            ui.notify(f"Failed to import pipeline: {e}", color='red')
 
 @ui.page('/')
 def main():
@@ -276,7 +296,7 @@ def main():
     ui.add_head_html('<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">')
     
     with ui.header().classes('bg-slate-900 shadow-md flex justify-between items-center px-4'):
-        ui.label('NODE PI-PELINE').classes('font-mono text-xl font-bold')
+        ui.label('EyeAria').classes('font-mono text-xl font-bold')
         
         with ui.row().classes('items-center gap-2'):
             ui.button('EXPORT', icon='file_download', on_click=app.logic.export_pipeline)\
