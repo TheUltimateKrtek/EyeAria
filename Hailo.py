@@ -5,6 +5,7 @@ import json
 import time
 from nicegui import ui
 from Node import Node, NodeRegistry
+from Schema import PipelinePayload
 
 # Import updated components from HailoPipeline
 try:
@@ -86,23 +87,19 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
         if hasattr(self, 'scan_spinner'): self.scan_spinner.set_visibility(False)
         if hasattr(self, 'scan_btn'): self.scan_btn.props('disable=false')
 
-    def on_data_received(self, frame, detections):
-        """
-        Implements HailoListener. 
-        Note: 'detections' is now a list of DICTS from AppSink.
-        """
-        payload = {
-            "timestamp": time.time(),
-            "config": {
-                "source": self.source_path,
-                "hef": self.hef_path,
-                "tracking": self.tracking_enabled
-            },
-            "count": len(detections),
-            "detections": detections # Already JSON-ready from AppSink
-        }
-        self.data_queue.put(json.dumps(payload))
-
+    def on_data_received(self, frame, raw_detections):
+        # raw_detections are dicts from AppSink, map them to the Schema
+        schema_detections = [Detection(**d) for d in raw_detections]
+        
+        payload = PipelinePayload(
+            timestamp=time.time(),
+            config={"source": self.source_path, "hef": self.hef_path, "tracking": self.tracking_enabled},
+            count=len(schema_detections),
+            detections=schema_detections
+        )
+        # Notify pushes it straight into the graph
+        self.notify(payload)
+        
     def get_frame(self):
         """Retrieves the raw camera frame directly from the pipeline tap."""
         if self.pipeline:

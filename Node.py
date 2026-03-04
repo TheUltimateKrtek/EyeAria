@@ -4,6 +4,8 @@ import uuid
 from typing import List, Dict, Type, Optional
 from nicegui import ui, app
 
+from Schema import PipelinePayload
+
 class NodeRegistry:
     _nodes: Dict[str, Type['Node']] = {}
 
@@ -58,19 +60,21 @@ class Node(abc.ABC):
         self._stop()
         for sub in self.subscribers: sub.stop()
 
-    def input(self, data_json: str):
+    def input(self, payload: PipelinePayload):
         if not self.running: return
-        try:
-            json.loads(data_json)
-            result_json = self._input(data_json)
-            if self.has_output and result_json is not None:
-                self.notify(result_json)
-        except json.JSONDecodeError:
-            pass
+        
+        # Pass the object directly
+        result_payload = self._input(payload)
+        
+        # If the node returns a modified payload, notify subscribers
+        if self.has_output and result_payload is not None:
+            self.notify(result_payload)
 
-    def notify(self, data_json: str):
-        for sub in self.subscribers: sub.input(data_json)
-
+    def notify(self, payload: PipelinePayload):
+        for sub in self.subscribers: 
+            # Use your custom copy method to branch the data safely!
+            sub.input(payload.copy())
+            
     def add_subscriber(self, node: 'Node'):
         node.parent = self
         self.subscribers.append(node)
@@ -190,7 +194,7 @@ class Node(abc.ABC):
     @abc.abstractmethod
     def _stop(self): pass
     @abc.abstractmethod
-    def _input(self, data_json: str) -> Optional[str]: pass
+    def _input(self, payload: PipelinePayload) -> Optional[PipelinePayload]: pass
     @abc.abstractmethod
     def create_content(self): pass
 

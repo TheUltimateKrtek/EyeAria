@@ -3,6 +3,7 @@ import paho.mqtt.client as mqtt
 from typing import Optional
 from nicegui import ui
 from Node import Node, NodeRegistry
+from Schema import PipelinePayload
 
 @NodeRegistry.register("MQTT Source")
 class MQTTInputNode(Node):
@@ -22,9 +23,9 @@ class MQTTInputNode(Node):
     def _on_message(self, client, userdata, msg):
         try:
             payload_str = msg.payload.decode()
-            # Ensure valid JSON before propagation
-            json.loads(payload_str) 
-            self.notify(payload_str)
+            # Parse the string into your strongly-typed objects
+            payload = PipelinePayload.from_json(payload_str) 
+            self.notify(payload)
         except Exception as e:
             print(f"MQTT Source Error: {e}")
 
@@ -93,5 +94,5 @@ class MQTTInputNode(Node):
         self.username = data.get("username", "")
         self.password = data.get("password", "")
 
-    def _input(self, data_json):
+    def _input(self, payload: PipelinePayload):
         return None

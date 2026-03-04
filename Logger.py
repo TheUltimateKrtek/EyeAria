@@ -6,6 +6,7 @@ import numpy as np
 from typing import List, Dict, Optional
 from nicegui import ui
 from Node import Node, NodeRegistry
+from Schema import PipelinePayload, Detection
 
 @NodeRegistry.register("Logger")
 class LoggerNode(Node):
@@ -92,20 +93,14 @@ class LoggerNode(Node):
             self.object_labels.pop(tid, None)
             self.last_seen.pop(tid, None)
 
-    def _input(self, data_json: str) -> Optional[str]:
+    def _input(self, payload: PipelinePayload) -> Optional[PipelinePayload]:
         try:
-            payload = json.loads(data_json)
-            self.last_json = json.dumps(payload, indent=2)
+            # Use the schema's built-in serializer for the UI display
+            self.last_json = payload.to_json()
+            self.current_detections = payload.detections
             
-            self.current_detections = payload.get("detections", [])
-            
-            # --- IMMEDIATE PURGE LOGIC ---
-            # 1. Map current detections to a set of active Track IDs
-            active_tids = {det.get("track_id") for det in self.current_detections 
-                        if det.get("track_id", -1) != -1}
+            active_tids = {det.track_id for det in self.current_detections if det.track_id != -1}
 
-            # 2. Sweep: Remove any ID from paths that is NOT in the current frame
-            # This ensures if Hailo stops reporting an ID, it vanishes instantly.
             all_known_tids = list(self.paths.keys())
             for tid in all_known_tids:
                 if tid not in active_tids:
@@ -113,18 +108,17 @@ class LoggerNode(Node):
                     self.object_labels.pop(tid, None)
                     self.last_seen.pop(tid, None)
 
-            # 3. Process the current active detections
             for det in self.current_detections:
-                tid = det.get("track_id", -1)
+                tid = det.track_id
                 if tid == -1: continue 
 
                 self.last_seen[tid] = time.time()
-                self.object_labels[tid] = det.get("label", "unknown")
+                self.object_labels[tid] = det.label
                 
                 if tid not in self.paths:
                     self.paths[tid] = []
                 
-                self.paths[tid].append(det["bbox"])
+                self.paths[tid].append(det.bbox)
                 
                 limit = int(self.max_path_points)
                 if len(self.paths[tid]) > limit:
@@ -136,7 +130,8 @@ class LoggerNode(Node):
         if time.time() - self.last_update > 0.05: 
             self.refresh_view()
             self.last_update = time.time()
-        return None
+            
+        return payload
     
     def get_color(self, tid, label):
         """Generates deterministic HSL colors for IDs or Labels."""

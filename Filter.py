@@ -1,7 +1,9 @@
 import json
 from abc import ABC, abstractmethod
+from typing import Optional
 from nicegui import ui
 from Node import Node, NodeRegistry
+from Schema import PipelinePayload, Detection
 
 # ==========================================
 # MODULAR CONDITION CLASSES
@@ -14,7 +16,7 @@ class FilterCondition(ABC):
         self.ui_container = None
 
     @abstractmethod
-    def check(self, detection: dict) -> bool:
+    def check(self, detection: Detection) -> bool:
         """Returns True if the detection passes this condition."""
         pass
 
@@ -40,11 +42,10 @@ class LabelCondition(FilterCondition):
         self.target_label = "person"
         self.exact_match = False
 
-    def check(self, detection: dict) -> bool:
-        label = detection.get("label", "")
+    def check(self, detection: Detection) -> bool:
         if self.exact_match:
-            return label == self.target_label
-        return self.target_label.lower() in label.lower()
+            return detection.label == self.target_label
+        return self.target_label.lower() in detection.label.lower()
 
     def create_ui(self):
         with ui.row().classes('w-full items-center gap-2'):
@@ -65,9 +66,8 @@ class ConfidenceCondition(FilterCondition):
         self.min_conf = 0.5
         self.max_conf = 1.0
 
-    def check(self, detection: dict) -> bool:
-        conf = detection.get("confidence", 0.0)
-        return self.min_conf <= conf <= self.max_conf
+    def check(self, detection: Detection) -> bool:
+        return self.min_conf <= detection.confidence <= self.max_conf
 
     def create_ui(self):
         with ui.column().classes('w-full gap-0'):
@@ -96,15 +96,12 @@ class DimensionsCondition(FilterCondition):
         self.w_range = {'min': 0.0, 'max': 1.0}
         self.h_range = {'min': 0.0, 'max': 1.0}
 
-    def check(self, detection: dict) -> bool:
-        bbox = detection.get("bbox", [0,0,0,0]) # [xmin, ymin, xmax, ymax]
+    def check(self, detection: Detection) -> bool:
+        bbox = detection.bbox # [xmin, ymin, xmax, ymax]
         w = bbox[2] - bbox[0]
         h = bbox[3] - bbox[1]
-        
-        valid_w = self.w_range['min'] <= w <= self.w_range['max']
-        valid_h = self.h_range['min'] <= h <= self.h_range['max']
-        return valid_w and valid_h
-
+        return (self.w_range['min'] <= w <= self.w_range['max']) and (self.h_range['min'] <= h <= self.h_range['max'])
+    
     def create_ui(self):
         with ui.column().classes('w-full gap-0'):
             ui.label("Width Range").classes('text-[10px] text-gray-500')
@@ -131,25 +128,9 @@ class PositionCondition(FilterCondition):
         self.h = 0.5
         self.require_contained = False # True = Whole object must be inside. False = Intersection.
 
-    def check(self, detection: dict) -> bool:
-        # Object Box
-        o_xmin, o_ymin, o_xmax, o_ymax = detection.get("bbox", [0,0,0,0])
-        
-        # Filter Area Box
-        f_xmin = self.x
-        f_ymin = self.y
-        f_xmax = self.x + self.w
-        f_ymax = self.y + self.h
-
-        if self.require_contained:
-            # Check if Object is FULLY inside Filter Area
-            return (o_xmin >= f_xmin and o_xmax <= f_xmax and 
-                    o_ymin >= f_ymin and o_ymax <= f_ymax)
-        else:
-            # Check for INTERSECTION (AABB collision)
-            return (o_xmin < f_xmax and o_xmax > f_xmin and
-                    o_ymin < f_ymax and o_ymax > f_ymin)
-
+    def check(self, detection: Detection) -> bool:
+        o_xmin, o_ymin, o_xmax, o_ymax = detection.bbox
+    
     def create_ui(self):
         with ui.column().classes('w-full gap-1'):
             with ui.row().classes('w-full gap-1'):
@@ -205,25 +186,21 @@ class FilterNode(Node):
     def _stop(self):
         pass
 
-    def _input(self, data_json: str):
+    def _input(self, payload: PipelinePayload) -> Optional[PipelinePayload]:
         try:
-            data = json.loads(data_json)
-            raw_detections = data.get("detections", [])
-            
             if not self.conditions:
-                return data_json
+                return payload
 
             filtered_detections = []
-            for det in raw_detections:
+            for det in payload.detections:
                 results = [cond.check(det) for cond in self.conditions]
-                
                 is_valid = all(results) if self.logic_mode == "AND" else any(results)
                 if is_valid:
                     filtered_detections.append(det)
 
-            data["detections"] = filtered_detections
-            data["count"] = len(filtered_detections)
-            return json.dumps(data)
+            payload.detections = filtered_detections
+            payload.count = len(filtered_detections)
+            return payload
             
         except Exception as e:
             print(f"Filter Node Error: {e}")

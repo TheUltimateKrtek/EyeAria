@@ -4,6 +4,7 @@ import threading
 from typing import List, Dict, Optional, Any
 from nicegui import ui
 from Node import Node, NodeRegistry
+from Schema import PipelinePayload, Detection
 
 # --- Hardware Abstraction ---
 try:
@@ -62,16 +63,15 @@ class GPIONode(Node):
     # ==========================================
     # INPUT PROCESSING
     # ==========================================
-    def _calculate_geometry(self, det: Dict, index: int) -> Dict:
+    def _calculate_geometry(self, det: Detection, index: int) -> Dict:
         """Helper to standardize detection data for rule evaluation."""
-        # Fix: Dictionary-safe access to match AppSink output
-        xmin, ymin, xmax, ymax = det.get("bbox", [0,0,0,0])
+        xmin, ymin, xmax, ymax = det.bbox
         width = xmax - xmin
         height = ymax - ymin
         return {
-            "label": det.get("label"),
-            "confidence": det.get("confidence"),
-            "track_id": det.get("track_id", -1), # Added for object permanence
+            "label": det.label,
+            "confidence": det.confidence,
+            "track_id": det.track_id,
             "width": width, "height": height,
             "xcenter": xmin + (width/2), "ycenter": ymin + (height/2)
         }
@@ -100,16 +100,13 @@ class GPIONode(Node):
         except: return False
         return False
 
-    def _input(self, data_json: str) -> Optional[str]:
+    def _input(self, payload: PipelinePayload) -> Optional[PipelinePayload]:
         try:
-            payload = json.loads(data_json)
-            detections = payload.get("detections", [])
-            
             has_match = False
             if not self.rules["conditions"]:
-                has_match = len(detections) > 0
+                has_match = len(payload.detections) > 0
             else:
-                for i, det in enumerate(detections):
+                for i, det in enumerate(payload.detections):
                     geo = self._calculate_geometry(det, i)
                     if self._evaluate_condition(self.rules, geo):
                         has_match = True
@@ -118,7 +115,7 @@ class GPIONode(Node):
             if has_match:
                 self.last_valid_detection_time = time.time()
                 
-            return data_json 
+            return payload 
         except Exception as e:
             print(f"GPIO Input Error: {e}")
             return None

@@ -4,6 +4,7 @@ import paho.mqtt.client as mqtt
 from typing import Optional
 from nicegui import ui
 from Node import Node, NodeRegistry
+from Schema import PipelinePayload
 
 # Configure local logger
 logger = logging.getLogger(__name__)
@@ -66,12 +67,14 @@ class MqttSink(Node):
         self.last_status = "Stopped"
         self._update_status_ui()
 
-    def _input(self, data_json: str):
+    def _input(self, payload: PipelinePayload):
         """Processes incoming JSON and updates the UI log."""
         if self.client and self.connected:
+            # Safely serialize right before hitting the network
+            json_string = payload.to_json()  # Assume data_json is already a stringified JSON payload
+            self.client.publish(self.topic, json_string)
+            
             try:
-                self.client.publish(self.topic, data_json)
-                
                 # Update Message Counter
                 if hasattr(self, 'msg_counter_label'):
                     self.msg_count += 1
@@ -80,7 +83,7 @@ class MqttSink(Node):
                 # Update the Collapsable Log
                 if hasattr(self, 'last_input_display'):
                     # Prettify the JSON for the log
-                    parsed = json.loads(data_json)
+                    parsed = json.loads(json_string)
                     pretty_json = json.dumps(parsed, indent=2)
                     self.last_input_display.set_content(f"```json\n{pretty_json}\n```")
                     
