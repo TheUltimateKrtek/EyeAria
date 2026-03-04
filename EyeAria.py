@@ -38,6 +38,8 @@ class PipelineApp:
         self.container = None
         self.svg_container = None
 
+        self.is_running = False
+
         # --- CANVAS STATE ---
         self.pan_x = 0
         self.pan_y = 0
@@ -88,6 +90,27 @@ class PipelineApp:
         node.stop()
         self.refresh_ui()
 
+    def toggle_pipeline(self, button):
+        """Toggles the pipeline state and updates the button UI."""
+        if self.is_running:
+            # STOP THE PIPELINE
+            if self.root_node:
+                self.root_node.stop()
+            self.is_running = False
+            
+            # Update button to show "START" state
+            button.set_text('START PIPELINE')
+            button.props('icon=play_arrow color=emerald')
+        else:
+            # START THE PIPELINE
+            if self.root_node:
+                self.root_node.start()
+            self.is_running = True
+            
+            # Update button to show "STOP" state
+            button.set_text('STOP PIPELINE')
+            button.props('icon=stop color=red')
+            
     # ==========================================
     # THE CANVAS RENDERING ENGINE
     # ==========================================
@@ -239,6 +262,7 @@ class PipelineApp:
     # ==========================================
     # PERSISTENCE (Export / Import)
     # ==========================================
+
     def export_pipeline(self):
         if not self.root_node:
             ui.notify("Nothing to export!", color='warning')
@@ -306,10 +330,8 @@ def main():
             
             ui.separator().props('vertical').classes('mx-2 bg-slate-700 h-6')
             
-            ui.button('RUN', icon='play_arrow', on_click=lambda: app.logic.root_node.start() if app.logic.root_node else None)\
-                .props('flat color=green text-white font-bold')
-            ui.button('STOP', icon='stop', on_click=lambda: app.logic.root_node.stop() if app.logic.root_node else None)\
-                .props('flat color=red text-white font-bold')
+            btn = ui.button('START PIPELINE', icon='play_arrow', on_click=lambda e: app.logic.toggle_pipeline(e.sender)) \
+                .props('color=emerald unelevated').classes('font-bold shadow-sm')
     
     # Render the Canvas Container
     with ui.column().classes('p-0 w-full h-full m-0') as container:
