@@ -5,7 +5,7 @@ import json
 import time
 from nicegui import ui
 from Node import Node, NodeRegistry
-from Schema import PipelinePayload
+from Schema import Detection, PipelinePayload
 
 # Import updated components from HailoPipeline
 try:
@@ -95,6 +95,9 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
             timestamp=time.time(),
             config={"source": self.source_path, "hef": self.hef_path, "tracking": self.tracking_enabled},
             count=len(schema_detections),
+            model_name=self.model_name,
+            pi_uuid=self.pi_uuid,
+            camera_url=self.camera_url,
             detections=schema_detections
         )
         # Notify pushes it straight into the graph
@@ -312,6 +315,9 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
     def save(self) -> dict:
         base = super().save()
         base.update({
+            "model_name": self.model_name,
+            "camera_url": self.camera_url,
+            "pi_uuid": self.pi_uuid,
             "source_path": self.source_path,
             "hef_path": self.hef_path,
             "so_path": self.so_path,
@@ -322,6 +328,9 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
         return base
 
     def _load_config(self, data: dict):
+        self.model_name = data.get("model_name", "YOLOv8")
+        self.camera_url = data.get("camera_url", "0")
+        self.pi_uuid = data.get("pi_uuid", "pi-default-001")
         self.source_path = data.get("source_path", "")
         self.hef_path = data.get("hef_path", "")
         self.so_path = data.get("so_path", "")

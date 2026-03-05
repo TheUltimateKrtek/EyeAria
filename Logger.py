@@ -55,17 +55,21 @@ class LoggerNode(Node):
     def update_background(self):
         """Captures a frame from the specified background camera source."""
         if not self.show_background or not self.bg_source_path:
+            if hasattr(self, 'bg_image'):
+                self.bg_image.set_visibility(False)
             if self.cap:
                 self.cap.release()
                 self.cap = None
                 self._current_bg_path = None
             return
+            
+        if hasattr(self, 'bg_image'):
+            self.bg_image.set_visibility(True)
 
         # Smart source switching: handles integer IDs or URL strings
         if self.bg_source_path != self._current_bg_path:
             if self.cap: self.cap.release()
             try:
-                # Convert to int if it's a digit (local cam), else keep as string (URL)
                 src = int(self.bg_source_path) if self.bg_source_path.strip().isdigit() else self.bg_source_path
                 self.cap = cv2.VideoCapture(src)
                 self._current_bg_path = self.bg_source_path
@@ -80,6 +84,10 @@ class LoggerNode(Node):
                 frame = cv2.resize(frame, (640, 480))
                 _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
                 self.bg_image_data = f"data:image/jpeg;base64,{base64.b64encode(buffer).decode()}"
+                
+                # Push only the image update to the frontend UI
+                if hasattr(self, 'bg_image'):
+                    self.bg_image.source = self.bg_image_data
 
     def prune_tracks(self):
         """
@@ -149,9 +157,8 @@ class LoggerNode(Node):
         
         svg_inner = ""
         
-        # 1. Background Layer
-        if self.show_background and self.bg_image_data:
-            svg_inner += f'<image href="{self.bg_image_data}" x="0" y="0" width="100" height="100" preserveAspectRatio="none" />'
+        # 1. Background Layer is REMOVED from the SVG! 
+        # (It is now handled efficiently by self.bg_image in update_background)
 
         tail_len = int(self.max_rects_per_obj)
 
@@ -162,7 +169,6 @@ class LoggerNode(Node):
             
             draw_history = history[-tail_len:]
             for i, bbox in enumerate(draw_history):
-                # Fade out: oldest rectangles are more transparent
                 alpha = 0.2 + 0.8 * (i / max(1, len(draw_history) - 1))
                 xmin, ymin, xmax, ymax = bbox
                 svg_inner += (f'<rect x="{xmin*100}" y="{ymin*100}" width="{(xmax-xmin)*100}" height="{(ymax-ymin)*100}" '
@@ -184,17 +190,21 @@ class LoggerNode(Node):
                 if self.show_labels:
                     svg_inner += f'<text x="{xmin*100}" y="{ymin*100-1}" font-size="3.5" fill="{color}" font-weight="bold" style="text-shadow: 1px 1px 2px black;">{label}</text>'
 
-        # Push to NiceGUI HTML component
-        self.path_map.set_content(f'<svg viewBox="0 0 100 100" class="path-svg" style="background-color: #000;">{svg_inner}</svg>')
-
+        # Push to NiceGUI HTML component with a transparent background so the video shows through
+        self.path_map.set_content(f'<svg viewBox="0 0 100 100" class="path-svg" style="background-color: transparent;">{svg_inner}</svg>')
+        
     def create_content(self):
         with ui.column().classes('w-full gap-2'):
-            # 1. SVG Display (Removed 'rounded')
-            with ui.column().classes('w-full p-0 bg-black overflow-hidden border-2 border-slate-800 relative'):
-                self.path_map = ui.html('', sanitize=False).classes('w-full aspect-square')
+            # 1. Video & SVG Display Layer (Updated for Network Streaming)
+            with ui.element('div').classes('w-full aspect-square p-0 bg-black overflow-hidden border-2 border-slate-800 relative'):
+                # Background Video Layer (Updates at 10 FPS)
+                self.bg_image = ui.image('').classes('w-full h-full absolute top-0 left-0').style('object-fit: fill; z-index: 0;')
+                
+                # Transparent SVG Overlay Layer (Updates at 30+ FPS)
+                self.path_map = ui.html('', sanitize=False).classes('w-full h-full absolute top-0 left-0').style('z-index: 10; pointer-events: none;')
                 ui.add_head_html('<style>.path-svg { width: 100%; height: 100%; }</style>')
 
-            # 2. Settings Panel (Removed 'rounded')
+            # 2. Settings Panel
             with ui.column().classes('bg-slate-50 border border-slate-200 border-l-4 border-l-slate-500 w-full p-2 shadow-sm gap-1'):
                 ui.label("DISPLAY SETTINGS").classes('text-[10px] font-bold text-slate-700')
                 
@@ -208,7 +218,7 @@ class LoggerNode(Node):
                     ui.number("Tail", format="%d").bind_value(self, 'max_rects_per_obj').classes('w-16 text-xs').props('dense')
                     ui.number("History", format="%d").bind_value(self, 'max_path_points').classes('w-16 text-xs').props('dense')
 
-            # 3. JSON Monitor (Removed 'rounded')
+            # 3. JSON Monitor
             with ui.column().classes('w-full p-0 bg-slate-900 overflow-hidden shadow-sm gap-0'):
                 with ui.row().classes('w-full bg-slate-800 p-1 px-2 border-b border-slate-700'):
                     ui.label("LIVE PAYLOAD").classes('text-[9px] font-bold text-slate-400')

@@ -184,7 +184,6 @@ class PipelineApp:
             def handle_wheel(e):
                 self.zoom = max(0.2, min(3.0, self.zoom + (0.05 if e.args.get('deltaY', 0) < 0 else -0.05)))
                 self._update_viewport()
-                self._update_view_box()
 
             outer.on('mousedown', handle_bg_mousedown)
             outer.on('touchstart', handle_bg_mousedown)

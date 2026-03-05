@@ -17,33 +17,33 @@ class PipelinePayload:
     timestamp: float
     config: Dict[str, Any]
     count: int
+    model_name: str = ""
+    pi_uuid: str = ""
+    camera_url: str = ""
     detections: List[Detection] = field(default_factory=list)
 
     def copy(self) -> 'PipelinePayload':
-        """
-        Creates a deep copy of the payload. 
-        Crucial for branching outputs so nodes don't mutate each other's data.
-        """
         return copy.deepcopy(self)
 
     def to_json(self) -> str:
-        """Serializes the strictly-typed object back into a JSON string."""
         return json.dumps(asdict(self))
 
     @classmethod
     def from_json(cls, json_str: str) -> 'PipelinePayload':
-        """Parses a JSON string into strictly-typed objects."""
         return cls.from_dict(json.loads(json_str))
 
     @classmethod
     def from_dict(cls, data: dict) -> 'PipelinePayload':
-        """Helper to map a dictionary to the dataclass hierarchy."""
-        # Convert the raw list of dictionaries into a list of Detection objects
         detections_list = [Detection(**det) for det in data.get("detections", [])]
+        config_data = data.get("config", {})
         
         return cls(
             timestamp=data.get("timestamp", 0.0),
-            config=data.get("config", {}),
+            config=config_data,
             count=data.get("count", len(detections_list)),
+            # Load explicitly from root dict, or fallback to config dictionary
+            model_name=data.get("model_name", config_data.get("model_name", "")),
+            pi_uuid=data.get("pi_uuid", config_data.get("pi_uuid", "")),
+            camera_url=data.get("camera_url", config_data.get("camera_url", "")),
             detections=detections_list
         )
