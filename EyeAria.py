@@ -131,7 +131,7 @@ class PipelineApp:
                     f'transform-origin: 0 0; transform: translate({self.pan_x}px, {self.pan_y}px) scale({self.zoom});'
                 )
                 with self.viewport:
-                    self.svg_container = ui.html('<svg width="100%" height="100%"></svg>', sanitize=False).classes('absolute top-0 left-0 w-full h-full pointer-events-none z-0')
+                    self.svg_container = ui.html('<svg width="100%" height="100%" style="overflow: visible;"></svg>', sanitize=False).classes('absolute top-0 left-0 w-full h-full pointer-events-none z-0')
                     if not self.root_node:
                         ui.button('ADD SOURCE NODE', on_click=lambda: self.add_node_dialog(None)).classes('absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 shadow-lg').props('icon=add color=green')
                     else:
@@ -209,7 +209,7 @@ class PipelineApp:
         if not self.root_node or not self.svg_container:
             return
             
-        svg_content = '<svg width="100%" height="100%">'
+        svg_content = '<svg width="100%" height="100%" style="overflow: visible;">'
         
         def draw_branch(node):
             nonlocal svg_content

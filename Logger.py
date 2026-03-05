@@ -83,11 +83,8 @@ class LoggerNode(Node):
                 # Resize and compress for UI performance
                 frame = cv2.resize(frame, (640, 480))
                 _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
-                self.bg_image_data = f"data:image/jpeg;base64,{base64.b64encode(buffer).decode()}"
-                
-                # Push only the image update to the frontend UI
-                if hasattr(self, 'bg_image'):
-                    self.bg_image.source = self.bg_image_data
+                # ADD .tobytes() to the buffer here:
+                self.bg_image_data = f"data:image/jpeg;base64,{base64.b64encode(buffer.tobytes()).decode()}"
 
     def prune_tracks(self):
         """
@@ -180,10 +177,10 @@ class LoggerNode(Node):
 
         # 3. Draw Untracked Objects (ID -1: Color + Label, No Tail)
         for det in self.current_detections:
-            if det.get("track_id", -1) == -1:
-                label = det.get("label", "unknown")
+            if getattr(det, "track_id", -1) == -1:  # Safer check using getattr
+                label = getattr(det, "label", "unknown")
                 color = self.get_color(-1, label)
-                xmin, ymin, xmax, ymax = det["bbox"]
+                xmin, ymin, xmax, ymax = det.bbox  # Access as an object attribute
                 
                 svg_inner += (f'<rect x="{xmin*100}" y="{ymin*100}" width="{(xmax-xmin)*100}" height="{(ymax-ymin)*100}" '
                              f'fill="none" stroke="{color}" stroke-width="0.5" />')

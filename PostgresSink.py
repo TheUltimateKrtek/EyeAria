@@ -35,6 +35,7 @@ class PostgresSink(Node):
         self.session_inserted = False
         self.msg_count = 0
         self.last_status = "Stopped"
+        self.server_running = False
 
     def _start(self):
         self.last_status = "Connecting..."
@@ -87,7 +88,7 @@ class PostgresSink(Node):
                 cur.execute("""
                     INSERT INTO detections (
                         session_id, timestamp, label, confidence, 
-                        xmin, ymin, xmax, ymax, track_id
+                        bbox_xmin, bbox_ymin, bbox_xmax, bbox_ymax, track_id
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
@@ -140,6 +141,7 @@ class PostgresSink(Node):
                 );
             """)
             
+            # Updated xmin/xmax to bbox_xmin/bbox_xmax
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS detections (
                     id SERIAL PRIMARY KEY,
@@ -147,10 +149,10 @@ class PostgresSink(Node):
                     timestamp DOUBLE PRECISION,
                     label VARCHAR(255),
                     confidence DOUBLE PRECISION,
-                    xmin DOUBLE PRECISION,
-                    ymin DOUBLE PRECISION,
-                    xmax DOUBLE PRECISION,
-                    ymax DOUBLE PRECISION,
+                    bbox_xmin DOUBLE PRECISION,
+                    bbox_ymin DOUBLE PRECISION,
+                    bbox_xmax DOUBLE PRECISION,
+                    bbox_ymax DOUBLE PRECISION,
                     track_id INTEGER
                 );
             """)
@@ -165,38 +167,90 @@ class PostgresSink(Node):
     # --- LOCAL SERVER MANAGEMENT COMMANDS ---
 
     def execute_initdb(self):
-        ITDB_PATH = "/usr/lib/postgresql/15/bin/initdb"
-        subprocess.run([INITDB_PATH, "-D", "/path/to/your/data/directory"])
         target_dir = os.path.abspath(self.data_dir)
+        # 1. Define the absolute path to the initdb binary
+        initdb_bin = "/usr/lib/postgresql/15/bin/initdb"
+        
         try:
             os.makedirs(target_dir, exist_ok=True)
-            result = subprocess.run(["initdb", "-D", target_dir, "-U", self.user, "-A", "trust"], capture_output=True, text=True)
+            # 2. Use the absolute path in the subprocess call
+            result = subprocess.run([initdb_bin, "-D", target_dir, "-U", self.user, "-A", "trust"], capture_output=True, text=True)
+            
             if result.returncode == 0:
                 ui.notify(f"Database cluster initialized at {target_dir}", color="positive")
             else:
                 ui.notify(f"initdb failed: {result.stderr}", color="negative")
         except FileNotFoundError:
-            ui.notify("Error: 'initdb' command not found. Is PostgreSQL installed locally?", color="negative")
+            ui.notify(f"Error: '{initdb_bin}' command not found. Is PostgreSQL 15 installed locally?", color="negative")
         except Exception as e:
             ui.notify(f"Error initializing: {e}", color="negative")
 
-    def toggle_server(self, action: str):
+    def check_local_server_status(self):
+        """Checks if the Postgres cluster is currently running and updates the UI."""
+        target_dir = os.path.abspath(self.data_dir)
+        pg_ctl_bin = "/usr/lib/postgresql/15/bin/pg_ctl"
+        
+        custom_env = os.environ.copy()
+        custom_env["PATH"] += os.pathsep + "/usr/lib/postgresql/15/bin"
+        
+        try:
+            # pg_ctl status returns 0 if running, or 3/4 if stopped/no directory
+            result = subprocess.run([pg_ctl_bin, "-D", target_dir, "status"], capture_output=True, text=True, env=custom_env)
+            self.server_running = (result.returncode == 0)
+        except Exception:
+            self.server_running = False
+            
+        # Update the button text and color if the dialog is open
+        if hasattr(self, 'toggle_btn'):
+            if self.server_running:
+                self.toggle_btn.set_text("Stop Local Server")
+                self.toggle_btn.props('color=red icon=stop')
+            else:
+                self.toggle_btn.set_text("Start Local Server")
+                self.toggle_btn.props('color=green icon=play_arrow')
+
+    def toggle_server(self):
+        """Starts or stops the server based on its current known status."""
         target_dir = os.path.abspath(self.data_dir)
         log_file = os.path.join(target_dir, "server.log")
+        pg_ctl_bin = "/usr/lib/postgresql/15/bin/pg_ctl"
+        
+        custom_env = os.environ.copy()
+        custom_env["PATH"] += os.pathsep + "/usr/lib/postgresql/15/bin"
+        
+        action = "stop" if self.server_running else "start"
+        
         try:
             if action == "start":
-                cmd = ["pg_ctl", "-D", target_dir, "-l", log_file, "-o", f"-p {self.port}", "start"]
+                cmd = [pg_ctl_bin, "-D", target_dir, "-l", log_file, "-o", f"-p {self.port} -k /tmp", "start"]
             else:
-                cmd = ["pg_ctl", "-D", target_dir, "stop"]
+                cmd = [pg_ctl_bin, "-D", target_dir, "stop"]
                 
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, env=custom_env)
+            
             if result.returncode == 0:
                 ui.notify(f"Local Server {action}ed successfully.", color="positive")
             else:
-                ui.notify(f"Failed to {action} server: {result.stderr}", color="negative")
+                # --- EXTRACT THE REAL ERROR ---
+                detailed_error = result.stderr.strip()
+                if os.path.exists(log_file):
+                    with open(log_file, "r") as f:
+                        logs = f.read().strip()
+                        if logs:
+                            # Get the last 3 lines of the log
+                            detailed_error = "\n".join(logs.splitlines()[-3:])
+                
+                if not detailed_error:
+                    detailed_error = "Unknown Error. (Are you running this script as root/sudo?)"
+
+                ui.notify(f"DB Error:\n{detailed_error}", color="negative", multi_line=True)
+                print(f"--- POSTGRES STARTUP ERROR ---\n{detailed_error}\n------------------------------")
+                
         except FileNotFoundError:
-            ui.notify("Error: 'pg_ctl' command not found.", color="negative")
+            ui.notify(f"Error: '{pg_ctl_bin}' command not found.", color="negative")
             
+        self.check_local_server_status()
+
     def create_local_database(self):
         """Creates the logical database. Used only if the DB doesn't exist yet."""
         try:
@@ -237,14 +291,21 @@ class PostgresSink(Node):
 
             with ui.column().classes('w-full border border-sky-100 p-3 rounded gap-2 bg-sky-50/50'):
                 ui.label("2. Start / Stop Server").classes('font-bold text-xs text-sky-900')
-                with ui.row().classes('w-full gap-2'):
-                    ui.button("Start pg_ctl", on_click=lambda: self.toggle_server("start")).props('size=sm color=green').classes('grow')
-                    ui.button("Stop pg_ctl", on_click=lambda: self.toggle_server("stop")).props('size=sm color=red').classes('grow')
+                
+                # Replace the row of two buttons with this single smart button
+                self.toggle_btn = ui.button("Checking Status...", on_click=self.toggle_server).classes('w-full').props('size=sm')
+                # Check status immediately to set the correct color/text
+                self.check_local_server_status()
                     
             with ui.column().classes('w-full border border-sky-100 p-3 rounded gap-2 bg-sky-50/50'):
                 ui.label("3. Create Database").classes('font-bold text-xs text-sky-900')
                 ui.label(f"Creates a DB named '{self.dbname}'").classes('text-[10px] text-slate-500')
                 ui.button("Create DB", on_click=self.create_local_database).props('outline size=sm color=sky').classes('w-full')
+            
+            with ui.column().classes('w-full border border-sky-100 p-3 rounded gap-2 bg-sky-50/50'):
+                ui.label("4. Table Setup").classes('font-bold text-xs text-sky-900')
+                ui.label(f"Generates the tables.").classes('text-[10px] text-slate-500')
+                ui.button("Build Tables", on_click=self.build_tables).props('outline size=sm color=sky').classes('w-full')
 
         dialog.open()
 
@@ -271,8 +332,7 @@ class PostgresSink(Node):
                     ui.input(label="Password", password=True).bind_value(self, 'password').classes('w-1/2 text-xs').props('dense')
                 
                 with ui.row().classes('w-full gap-1 mt-1'):
-                    ui.button("Test", on_click=self.test_connection).props('outline size=sm color=slate').classes('grow')
-                    ui.button("Build Schema Tables", on_click=self.build_tables).props('outline size=sm color=sky').classes('grow')
+                    ui.button("Test Connection", on_click=self.test_connection).props('outline size=sm color=slate').classes('w-full')
 
             # 2. Local Manager
             ui.button("Local Server Setup...", on_click=self.open_management_dialog)\

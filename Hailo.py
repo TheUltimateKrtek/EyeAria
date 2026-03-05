@@ -3,6 +3,8 @@ import threading
 import queue
 import json
 import time
+import uuid
+import subprocess
 from nicegui import ui
 from Node import Node, NodeRegistry
 from Schema import Detection, PipelinePayload
@@ -40,6 +42,10 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
         self.source_path = "detection0.mp4"
         self.hef_path = "yolov8s_h8l.hef"
         self.so_path = "libyolo_hailortpp_post.so"
+
+        self.model_name = "YOLOv8"
+        self.camera_url = "0"
+        self.pi_uuid = self._get_device_uuid()
         
         # Tracking Configuration (Object Permanence)
         self.tracking_enabled = False
@@ -87,18 +93,41 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
         if hasattr(self, 'scan_spinner'): self.scan_spinner.set_visibility(False)
         if hasattr(self, 'scan_btn'): self.scan_btn.props('disable=false')
 
+    def _get_device_uuid(self):
+        """Reads the hardware UUID from a file, or generates one if it's the first boot."""
+        uuid_file = "device_uuid.txt"
+        if os.path.exists(uuid_file):
+            with open(uuid_file, "r") as f:
+                return f.read().strip()
+        else:
+            new_uuid = f"pi-{str(uuid.uuid4())[:8]}" # Creates something like pi-a1b2c3d4
+            with open(uuid_file, "w") as f:
+                f.write(new_uuid)
+            return new_uuid
+
     def on_data_received(self, frame, raw_detections):
         # raw_detections are dicts from AppSink, map them to the Schema
         schema_detections = [Detection(**d) for d in raw_detections]
         
+        # Dynamically extract the model name from the HEF file path
+        # e.g., "/path/to/yolov8s_h8l.hef" -> "yolov8s_h8l"
+        derived_model_name = os.path.splitext(os.path.basename(self.hef_path))[0]
+        
+        # Update the UI status label directly
+        if hasattr(self, 'status_label'):
+            self.status_label.set_text(
+                f"Detections: {len(schema_detections)} (Tracked: {self.tracking_enabled})"
+            )
+            
         payload = PipelinePayload(
             timestamp=time.time(),
             config={"source": self.source_path, "hef": self.hef_path, "tracking": self.tracking_enabled},
             count=len(schema_detections),
-            model_name=self.model_name,
+            model_name=derived_model_name,
             pi_uuid=self.pi_uuid,
-            camera_url=self.camera_url,
-            detections=schema_detections
+            camera_url=self.source_path,  # Maps directly to your first text field!
+            detections=schema_detections,
+            frame=frame
         )
         # Notify pushes it straight into the graph
         self.notify(payload)
@@ -192,6 +221,8 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
                 ui.input(label="Post-Proc (.so)").bind_value(self, 'so_path').classes('grow text-xs').props('dense')
                 ui.button(icon='search', on_click=lambda: self.show_search_dialog('so_path', 'so')) \
                     .props('flat round dense color=blue size=sm')
+            
+
             
             # Start the background scan silently on boot
             self.trigger_system_scan()
@@ -315,9 +346,6 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
     def save(self) -> dict:
         base = super().save()
         base.update({
-            "model_name": self.model_name,
-            "camera_url": self.camera_url,
-            "pi_uuid": self.pi_uuid,
             "source_path": self.source_path,
             "hef_path": self.hef_path,
             "so_path": self.so_path,
@@ -328,9 +356,6 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
         return base
 
     def _load_config(self, data: dict):
-        self.model_name = data.get("model_name", "YOLOv8")
-        self.camera_url = data.get("camera_url", "0")
-        self.pi_uuid = data.get("pi_uuid", "pi-default-001")
         self.source_path = data.get("source_path", "")
         self.hef_path = data.get("hef_path", "")
         self.so_path = data.get("so_path", "")

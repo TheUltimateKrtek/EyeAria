@@ -114,9 +114,8 @@ class Node(abc.ABC):
                 if self.has_output:
                     ui.button(icon='add', on_click=lambda: app.logic.add_node_dialog(self)).props('flat round dense text-green-400 size=sm')
                 
-                with ui.button(icon='more_vert').props('flat round dense text-gray-400 size=sm'):
-                    with ui.menu().classes('text-sm'):
-                        ui.menu_item('Delete', on_click=lambda: app.logic.delete_node(self))
+                # Replaced the menu with a direct delete button
+                ui.button(icon='close', on_click=lambda: app.logic.delete_node(self)).props('flat round dense text-red-400 size=sm')
 
             if not self.collapsed:
                 with ui.column().classes('p-2 w-full'):

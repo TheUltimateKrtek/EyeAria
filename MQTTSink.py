@@ -136,9 +136,8 @@ class MqttSink(Node):
                     self.status_label = ui.label("Status: Idle").classes("text-[10px] font-mono")
                     self.msg_counter_label = ui.label(f"Sent: {self.msg_count}").classes("text-[10px] font-mono")
                 
-                # Flattened the expansion and removed the 'rounded' class from the markdown box
-                with ui.expansion('Live Payload Log', icon='receipt').classes('w-full text-xs mt-1 border border-slate-200'):
-                    self.last_input_display = ui.markdown("Waiting for data...").classes('text-[10px] bg-slate-900 text-slate-100 p-2 overflow-x-auto')
+                with ui.expansion('Live Payload Log', icon='receipt').classes('w-full max-w-full text-xs mt-1 border border-slate-200 overflow-hidden'):
+                    self.last_input_display = ui.markdown("Waiting for data...").classes('w-full max-w-full text-[10px] bg-slate-900 text-slate-100 p-2 overflow-x-auto')
 
     def save(self) -> dict:
         data = super().save()
