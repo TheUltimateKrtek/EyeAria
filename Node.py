@@ -92,12 +92,12 @@ class Node(abc.ABC):
                 .style(f'left: {self.x}px; top: {self.y}px; width: {self.width}px; height: {self.height}px;')
             return
 
-        # The main card remains absolutely positioned
+                # The main card remains absolutely positioned
         self.card = ui.card().classes('absolute w-72 shadow-lg p-0 border border-slate-300 bg-white select-none touch-none') \
             .style(f'left: {self.x}px; top: {self.y}px; z-index: 10;')
         
-        self.card.on('mousedown.stop', lambda: None)
-        self.card.on('touchstart.stop', lambda: None)
+        # Stops clicks on the card from panning the canvas
+        self.card.on('pointerdown.stop', lambda: None) 
 
         with self.card:
             ui.element('q-resize-observer').on('resize', self._handle_resize)
@@ -121,56 +121,26 @@ class Node(abc.ABC):
                 with ui.column().classes('p-2 w-full'):
                     self.create_content()
 
-        # --- REFINED DRAG LOGIC ---
-        self.dragging = False
+                # --- REFINED DRAG LOGIC ---
         self.offset_x = 0
         self.offset_y = 0
-    
-        def get_coords(e):
-            if 'touches' in e.args and len(e.args['touches']) > 0:
-                return e.args['touches'][0]['clientX'], e.args['touches'][0]['clientY']
-            return e.args.get('clientX', 0), e.args.get('clientY', 0)
 
         def start_drag(e):
             if hasattr(app, 'logic'):
                 app.logic.active_node = self # Tell the canvas WE are moving
-                # Calculate initial grab offset in Canvas Space
                 zoom, px, py = app.logic.zoom, app.logic.pan_x, app.logic.pan_y
-                mx, my = (e.args['touches'][0]['clientX'] if 'touches' in e.args else e.args['clientX']), \
-                         (e.args['touches'][0]['clientY'] if 'touches' in e.args else e.args['clientY'])
+                
+                # Pointer events unify mouse and touch perfectly!
+                mx = e.args.get('clientX', 0)
+                my = e.args.get('clientY', 0)
+                
                 self.offset_x = (mx - px) / zoom - self.x
                 self.offset_y = (my - py) / zoom - self.y
                 self.card.style('z-index: 100;')
 
-        def stop_drag(e):
-            self.dragging = False # Reset for this instance
-            self.card.style('z-index: 10;')
+        # .stop prevents the canvas from panning when dragging a node
+        handle.on('pointerdown.stop', start_drag, args=['clientX', 'clientY'])
 
-        def move_node(e):
-            # THE FIX: This global event fires for ALL nodes, 
-            # but only the one with self.dragging == True will execute the move.
-            if self.dragging:
-                zoom = getattr(app.logic, 'zoom', 1.0)
-                pan_x = getattr(app.logic, 'pan_x', 0)
-                pan_y = getattr(app.logic, 'pan_y', 0)
-                
-                cur_x, cur_y = get_coords(e)
-                
-                self.x = (cur_x - pan_x) / zoom - self.offset_x
-                self.y = (cur_y - pan_y) / zoom - self.offset_y
-                
-                self.card.style(f'left: {self.x}px; top: {self.y}px;')
-                if hasattr(app, 'logic'):
-                    app.logic.redraw_wires()
-
-        # Wire up the events
-        handle.on('mousedown.stop', start_drag)
-        handle.on('touchstart.stop', start_drag)
-        # Using the canvas level or app level for movement ensures the drag doesn't "break"
-        ui.on('mousemove', move_node)
-        ui.on('touchmove', move_node) # Add this!
-        ui.on('mouseup', stop_drag)
-        ui.on('touchend', stop_drag)   # Add this!
 
     def toggle_collapse(self):
         self.collapsed = not self.collapsed

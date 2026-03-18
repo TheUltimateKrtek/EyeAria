@@ -1,10 +1,14 @@
+import sys
+import time
 import uuid
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 import subprocess
 import os
+import webbrowser
+import threading
 from typing import Optional
-from nicegui import ui
+from nicegui import ui, app
 from Node import Node, NodeRegistry
 from Schema import PipelinePayload
 import logging
@@ -36,6 +40,10 @@ class PostgresSink(Node):
         self.msg_count = 0
         self.last_status = "Stopped"
         self.server_running = False
+        
+        # Streamlit process tracker
+        self.dashboard_process = None
+        app.on_shutdown(self._cleanup_dashboard)
 
     def _start(self):
         self.last_status = "Connecting..."
@@ -64,7 +72,7 @@ class PostgresSink(Node):
             self.conn = None
         self.last_status = "Stopped"
         self._update_status_ui()
-
+        
     def _input(self, payload: PipelinePayload):
         if not self.running or not self.conn: 
             return None
@@ -163,6 +171,69 @@ class PostgresSink(Node):
             ui.notify("Schema tables created successfully!", color='positive')
         except Exception as e:
             ui.notify(f"Table Creation Error: {e}", color='negative')
+
+    # --- DASHBOARD MANAGEMENT ---
+
+    def _cleanup_dashboard(self):
+        """Ensures the Streamlit server is killed when EyeAria exits."""
+        if self.dashboard_process and self.dashboard_process.poll() is None:
+            self.dashboard_process.terminate()
+            self.dashboard_process = None
+
+    def toggle_dashboard(self):
+        """Starts or stops the Streamlit dashboard as a background process."""
+        if self.dashboard_process is None or self.dashboard_process.poll() is not None:
+            # --- START DASHBOARD ---
+            try:
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                dashboard_path = os.path.join(script_dir, "streamlit_dashboard.py")
+                
+                if not os.path.exists(dashboard_path):
+                    ui.notify("Could not find streamlit_dashboard.py in the current directory.", color="negative")
+                    return
+
+                # 1. Inject the Postgres node's configuration into the environment
+                custom_env = os.environ.copy()
+                custom_env["DB_HOST"] = self.host
+                custom_env["DB_PORT"] = str(self.port)
+                custom_env["DB_NAME"] = self.dbname
+                custom_env["DB_USER"] = self.user
+                custom_env["DB_PASS"] = self.password
+
+                # 2. Launch Streamlit, forcing it to listen on all network interfaces
+                self.dashboard_process = subprocess.Popen(
+                    [
+                        sys.executable, "-m", "streamlit", "run", dashboard_path, 
+                        "--server.headless", "true",
+                        "--server.address", "0.0.0.0"  # NEW: Allow remote access
+                    ],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    env=custom_env
+                )
+                
+                ui.notify("Dashboard starting...", color="positive")
+                self.dashboard_btn.set_text("Stop Dashboard")
+                self.dashboard_btn.props('color=red icon=stop')
+
+                # 3. Dynamically grab the server's hostname/IP from the browser and open the tab
+                js_redirect = """
+                    const serverHost = window.location.hostname;
+                    const serverProtocol = window.location.protocol;
+                    window.open(serverProtocol + "//" + serverHost + ":8501", "_blank");
+                """
+                ui.timer(2.0, lambda: ui.run_javascript(js_redirect), once=True)
+
+            except Exception as e:
+                ui.notify(f"Failed to start dashboard: {e}", color="negative")
+                logger.error(f"Streamlit launch error: {e}")
+        else:
+            # --- STOP DASHBOARD ---
+            self.dashboard_process.terminate()
+            self.dashboard_process = None
+            
+            self.dashboard_btn.set_text("Launch Dashboard")
+            self.dashboard_btn.props('color=sky icon=dashboard')
+            ui.notify("Dashboard stopped.", color="info")
 
     # --- LOCAL SERVER MANAGEMENT COMMANDS ---
 
@@ -337,6 +408,12 @@ class PostgresSink(Node):
             # 2. Local Manager
             ui.button("Local Server Setup...", on_click=self.open_management_dialog)\
                 .props('flat size=sm color=sky icon=dns').classes('w-full bg-slate-100 border border-slate-200')
+            
+            # NEW: Dashboard Launcher
+            self.dashboard_btn = ui.button(
+                "Launch Dashboard", 
+                on_click=self.toggle_dashboard
+            ).props('outline size=sm color=sky icon=dashboard').classes('w-full')
 
             # 3. Status Output
             with ui.column().classes('bg-white border border-slate-200 border-l-4 border-l-slate-400 w-full p-2 shadow-sm gap-1'):

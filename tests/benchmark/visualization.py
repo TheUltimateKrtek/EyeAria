@@ -5,38 +5,38 @@ import os
 import json
 import cv2
 
-st.set_page_config(page_title="Hailo Pipeline Benchmarks", layout="wide")
-st.title("Hailo Object Detection Pipeline Benchmarks")
+st.set_page_config(page_title="Benchmarky Hailo Pipeline", layout="wide")
+st.title("Benchmarky pipeline pro detekci objektů Hailo")
 
 DATA_FILE = "benchmark_results.csv"
 JSON_FILE = "benchmark_detections.json"
 VIDEO_FILE = "temp_benchmark_video.mp4"
 
 if not os.path.exists(DATA_FILE):
-    st.error(f"Data file '{DATA_FILE}' not found. Please run the benchmark script first.")
+    st.error(f"Datový soubor '{DATA_FILE}' nebyl nalezen. Prosím, nejdříve spusťte benchmarkovací skript.")
 else:
     df = pd.read_csv(DATA_FILE)
     
-    # Create the unified Config label
+    # Vytvoření jednotného štítku Config pro UI
     df["Config"] = df.apply(
-        lambda row: f"{'Track' if row['Tracking Enabled'] else 'NoTrack'} | {'Frames' if row['Frame Materialization'] else 'NoFrames'}", 
+        lambda row: f"{'Sledování' if row['Tracking Enabled'] else 'BezSledování'} | {'Snímky' if row['Frame Materialization'] else 'BezSnímků'}", 
         axis=1
     )
 
-    tab1, tab2, tab3 = st.tabs(["Performance (FPS)", "Detection Analytics", "Frame Visualizer"])
+    tab1, tab2, tab3 = st.tabs(["Výkon (FPS)", "Analytika detekcí", "Vizualizace snímků"])
 
     # ==========================================
-    # TAB 1: FPS PERFORMANCE
+    # ZÁLOŽKA 1: VÝKON FPS
     # ==========================================
     with tab1:
-        st.markdown("### FPS Comparison (Grouped by Model)")
+        st.markdown("### Porovnání FPS (seskupeno podle modelu)")
         model_order = ['yolov8n', 'yolov8s', 'yolov8m', 'yolov8l', 'yolov8x']
         
         fps_chart = alt.Chart(df).mark_bar().encode(
             x=alt.X('Config:N', title=None, axis=alt.Axis(labels=False, ticks=False)),
-            y=alt.Y('FPS:Q', title='Frames Per Second'),
-            color=alt.Color('Config:N', legend=alt.Legend(title="Pipeline Config", orient="bottom")),
-            column=alt.Column('Model:N', sort=model_order, header=alt.Header(title="Model Size", labelOrient='bottom')),
+            y=alt.Y('FPS:Q', title='Snímky za sekundu (FPS)'),
+            color=alt.Color('Config:N', legend=alt.Legend(title="Konfigurace pipeline", orient="bottom")),
+            column=alt.Column('Model:N', sort=model_order, header=alt.Header(title="Velikost modelu", labelOrient='bottom')),
             tooltip=['Model', 'Config', 'FPS', 'Avg Detections']
         ).properties(width=150, height=450)
         
@@ -44,16 +44,16 @@ else:
         st.dataframe(df, use_container_width=True)
 
     # ==========================================
-    # TAB 2: DETECTION ANALYTICS (JSON DATA)
+    # ZÁLOŽKA 2: ANALYTIKA DETEKCÍ (JSON DATA)
     # ==========================================
     with tab2:
         if not os.path.exists(JSON_FILE):
-            st.warning("Detection data JSON not found.")
+            st.warning("JSON soubor s daty detekcí nebyl nalezen.")
         else:
             with open(JSON_FILE, 'r') as f:
                 det_data = json.load(f)
 
-            # Build DataFrames for Analytics
+            # Sestavení DataFrame pro analytiku
             records = []
             frame_records = []
             baseline_config = "Track-False_Frames-False"
@@ -63,7 +63,7 @@ else:
                 config = run_id.split('_', 1)[1]
                 
                 for f_data in frames:
-                    # Frame-level data (for Line Charts) - only using baseline config to avoid duplicates
+                    # Data na úrovni snímku (pro čárové grafy) - používáme pouze základní config pro zamezení duplicitám
                     if config == baseline_config:
                         confs = [d['confidence'] for d in f_data['detections']]
                         avg_conf = sum(confs) / len(confs) if confs else 0.0
@@ -74,7 +74,7 @@ else:
                             'AvgConfidence': avg_conf
                         })
 
-                    # Object-level data (for Bar/Box Charts)
+                    # Data na úrovni objektů (pro sloupcové grafy)
                     for d in f_data['detections']:
                         records.append({
                             'Model': model,
@@ -88,30 +88,30 @@ else:
             frames_df = pd.DataFrame(frame_records)
 
             if det_df.empty:
-                st.info("No objects were detected.")
+                st.info("Nebyly detekovány žádné objekty.")
             else:
                 baseline_df = det_df[det_df['Config'] == baseline_config]
 
-                st.markdown("### Frame-by-Frame Timeline")
-                st.markdown("Tracking the stability of detections and confidence scores throughout the video.")
+                st.markdown("### Časová osa snímek po snímku")
+                st.markdown("Sledování stability detekcí a skóre spolehlivosti (confidence) v průběhu videa.")
                 
                 colA, colB = st.columns(2)
                 
                 with colA:
-                    st.subheader("Detections over Time")
+                    st.subheader("Detekce v čase")
                     line_det = alt.Chart(frames_df).mark_line().encode(
-                        x=alt.X('Frame:Q', title="Frame Number"),
-                        y=alt.Y('NumDetections:Q', title="Number of Objects Detected"),
+                        x=alt.X('Frame:Q', title="Číslo snímku"),
+                        y=alt.Y('NumDetections:Q', title="Počet detekovaných objektů"),
                         color=alt.Color('Model:N', sort=model_order),
                         tooltip=['Model', 'Frame', 'NumDetections']
                     ).properties(height=300)
                     st.altair_chart(line_det, use_container_width=True)
                     
                 with colB:
-                    st.subheader("Average Confidence over Time")
+                    st.subheader("Průměrná spolehlivost v čase")
                     line_conf = alt.Chart(frames_df).mark_line().encode(
-                        x=alt.X('Frame:Q', title="Frame Number"),
-                        y=alt.Y('AvgConfidence:Q', title="Average Confidence Score", scale=alt.Scale(domain=[0, 1])),
+                        x=alt.X('Frame:Q', title="Číslo snímku"),
+                        y=alt.Y('AvgConfidence:Q', title="Průměrné skóre spolehlivosti", scale=alt.Scale(domain=[0, 1])),
                         color=alt.Color('Model:N', sort=model_order),
                         tooltip=['Model', 'Frame', 'AvgConfidence']
                     ).properties(height=300)
@@ -119,40 +119,40 @@ else:
 
                 st.divider()
 
-                st.markdown("### Overall Object Accuracy (Baseline Config)")
+                st.markdown("### Celková přesnost objektů (Základní konfigurace)")
                 col1, col2 = st.columns(2)
 
                 with col1:
-                    st.subheader("Average Confidence Score")
+                    st.subheader("Průměrné skóre spolehlivosti")
                     conf_chart = alt.Chart(baseline_df).mark_bar().encode(
                         x=alt.X('Model:N', sort=model_order, axis=alt.Axis(labelAngle=0)),
-                        y=alt.Y('mean(Confidence):Q', title='Average Confidence', scale=alt.Scale(domain=[0, 1])),
+                        y=alt.Y('mean(Confidence):Q', title='Průměrná spolehlivost', scale=alt.Scale(domain=[0, 1])),
                         color=alt.Color('Model:N', legend=None),
                         tooltip=['Model', 'mean(Confidence)', 'count(Confidence)']
                     ).properties(height=300)
                     st.altair_chart(conf_chart, use_container_width=True)
 
                 with col2:
-                    st.subheader("Total Objects Detected (By Class)")
+                    st.subheader("Celkový počet detekovaných objektů (podle třídy)")
                     count_chart = alt.Chart(baseline_df).mark_bar().encode(
                         x=alt.X('Model:N', sort=model_order, axis=alt.Axis(labelAngle=0)),
-                        y=alt.Y('count():Q', title='Total Bounding Boxes Detected'),
-                        color=alt.Color('Label:N', legend=alt.Legend(title="Object Class")),
+                        y=alt.Y('count():Q', title='Celkový počet detekovaných boxů'),
+                        color=alt.Color('Label:N', legend=alt.Legend(title="Třída objektu")),
                         tooltip=['Model', 'Label', 'count()']
                     ).properties(height=300)
                     st.altair_chart(count_chart, use_container_width=True)
 
     # ==========================================
-    # TAB 3: FRAME VISUALIZER
+    # ZÁLOŽKA 3: VIZUALIZACE SNÍMKŮ
     # ==========================================
     with tab3:
-        st.markdown("### Visual Verification")
-        st.markdown("Select a frame and a model to see exactly what the AI detected. (Using baseline configuration: `NoTrack | NoFrames`)")
+        st.markdown("### Vizuální ověření")
+        st.markdown("Vyberte snímek a model, abyste viděli, co přesně AI detekovala. (Používá se základní konfigurace: `BezSledování | BezSnímků`)")
 
         if not os.path.exists(VIDEO_FILE):
-            st.error(f"Video file '{VIDEO_FILE}' not found. Ensure the benchmark script didn't delete it.")
+            st.error(f"Video soubor '{VIDEO_FILE}' nebyl nalezen. Ujistěte se, že jej benchmarkovací skript nesmazal.")
         elif not os.path.exists(JSON_FILE):
-            st.error("JSON detection data not found.")
+            st.error("JSON data detekcí nebyla nalezena.")
         else:
             with open(JSON_FILE, 'r') as f:
                 det_data = json.load(f)
@@ -164,19 +164,19 @@ else:
                 if frames:
                     max_frame_logged = max(max_frame_logged, frames[-1]['frame_count'])
 
-            # --- UI IMPROVEMENT HERE ---
-            st.markdown("#### Controls")
+            # --- VYLEPŠENÍ UI ZDE ---
+            st.markdown("#### Ovládací prvky")
             
-            # Use a horizontal radio button for instantaneous toggling
-            selected_model = st.radio("Toggle Model:", available_models, horizontal=True)
+            # Použití horizontálního přepínače pro okamžité přepínání
+            selected_model = st.radio("Přepnout model:", available_models, horizontal=True)
             
-            # Frame slider directly below it
-            selected_frame = st.slider("Scrub Video Frame:", min_value=1, max_value=max_frame_logged, value=1)
+            # Posuvník pro výběr snímku přímo pod přepínačem
+            selected_frame = st.slider("Posunout snímek videa:", min_value=1, max_value=max_frame_logged, value=1)
             
             st.divider()
             # ---------------------------
 
-            # Get the detections for the selected frame and model
+            # Získání detekcí pro vybraný snímek a model
             target_run_id = f"{selected_model}_Track-False_Frames-False"
             frame_detections = []
             
@@ -185,25 +185,42 @@ else:
                 if frame_data:
                     frame_detections = frame_data['detections']
 
-            # Extract the frame via OpenCV
+            # Extrakce snímku pomocí OpenCV
             cap = cv2.VideoCapture(VIDEO_FILE)
             cap.set(cv2.CAP_PROP_POS_FRAMES, selected_frame - 1) 
             ret, frame = cap.read()
             cap.release()
 
             if not ret:
-                st.error("Could not read that frame from the video file.")
+                st.error("Nepodařilo se načíst tento snímek z video souboru.")
             else:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 h, w, _ = frame.shape
 
+                # --- NEW REVERSE LETTERBOX MATH ---
+                # 640 is the standard Hailo YOLOv8 input size used in LetterboxAdapter
+                target_size = 640.0
+                scale = min(target_size / w, target_size / h)
+                pad_x = (target_size - w * scale) / 2.0
+                pad_y = (target_size - h * scale) / 2.0
+
                 for det in frame_detections:
                     label = det['label']
                     conf = det['confidence']
-                    bbox = det['bbox'] 
+                    bbox = det['bbox'] # Normalized relative to 640x640
                     
-                    x1, y1 = int(bbox[0] * w), int(bbox[1] * h)
-                    x2, y2 = int(bbox[2] * w), int(bbox[3] * h)
+                    # 1. Scale relative to 640x640
+                    # 2. Subtract the black bar padding
+                    # 3. Divide by the scale factor to return to the original video dimensions
+                    x1 = int(((bbox[0] * target_size) - pad_x) / scale)
+                    y1 = int(((bbox[1] * target_size) - pad_y) / scale)
+                    x2 = int(((bbox[2] * target_size) - pad_x) / scale)
+                    y2 = int(((bbox[3] * target_size) - pad_y) / scale)
+                    
+                    # Clamp values so they don't accidentally draw outside the image bounds
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(w, x2), min(h, y2)
+                    # ----------------------------------
                     
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                     
@@ -212,4 +229,4 @@ else:
                     cv2.rectangle(frame, (x1, y1 - 20), (x1 + text_w, y1), (0, 255, 0), -1)
                     cv2.putText(frame, text, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
 
-                st.image(frame, caption=f"Frame {selected_frame} | Model: {selected_model} | Detections: {len(frame_detections)}", use_container_width=True)
+                st.image(frame, caption=f"Snímek {selected_frame} | Model: {selected_model} | Detekce: {len(frame_detections)}", use_container_width=True)

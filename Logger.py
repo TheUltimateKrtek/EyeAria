@@ -37,7 +37,6 @@ class LoggerNode(Node):
 
         # Timers
         ui.timer(1.0, self.prune_tracks)
-        ui.timer(0.1, self.update_background) # 10 FPS BG Refresh
 
     def _start(self):
         self.paths.clear()
@@ -101,8 +100,24 @@ class LoggerNode(Node):
     def _input(self, payload: PipelinePayload) -> Optional[PipelinePayload]:
         try:
             # Use the schema's built-in serializer for the UI display
-            self.last_json = payload.to_json()
+            self.last_json = payload.to_json(indent=2)
             self.current_detections = payload.detections
+
+            if getattr(payload, 'frame', None) is not None:
+                if self.show_background:
+                    # Resize and encode specifically for the browser
+                    frame_resized = cv2.resize(payload.frame, (640, 480))
+                    _, buffer = cv2.imencode('.jpg', frame_resized, [cv2.IMWRITE_JPEG_QUALITY, 50])
+                    self.bg_image_data = f"data:image/jpeg;base64,{base64.b64encode(buffer.tobytes()).decode()}"
+                    
+                    # FIX: Inject a raw img tag with no transitions!
+                    if hasattr(self, 'bg_image'):
+                        self.bg_image.content = f'<img src="{self.bg_image_data}" style="width: 100%; height: 100%; object-fit: fill;" />'
+                        self.bg_image.set_visibility(True)
+                else:
+                    self.bg_image_data = None
+                    if hasattr(self, 'bg_image'):
+                        self.bg_image.set_visibility(False)
             
             active_tids = {det.track_id for det in self.current_detections if det.track_id != -1}
 
@@ -192,10 +207,11 @@ class LoggerNode(Node):
         
     def create_content(self):
         with ui.column().classes('w-full gap-2'):
-            # 1. Video & SVG Display Layer (Updated for Network Streaming)
+            # 1. Video & SVG Display Layer
             with ui.element('div').classes('w-full aspect-square p-0 bg-black overflow-hidden border-2 border-slate-800 relative'):
-                # Background Video Layer (Updates at 10 FPS)
-                self.bg_image = ui.image('').classes('w-full h-full absolute top-0 left-0').style('object-fit: fill; z-index: 0;')
+                
+                # ADD sanitize=False HERE:
+                self.bg_image = ui.html('', sanitize=False).classes('w-full h-full absolute top-0 left-0').style('z-index: 0;')
                 
                 # Transparent SVG Overlay Layer (Updates at 30+ FPS)
                 self.path_map = ui.html('', sanitize=False).classes('w-full h-full absolute top-0 left-0').style('z-index: 10; pointer-events: none;')

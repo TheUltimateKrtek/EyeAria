@@ -33,17 +33,17 @@
             "subscribers": [],
             "max_path_points": 50,
             "max_rects_per_obj": 5,
-            "show_labels": false,
+            "show_labels": true,
             "show_background": true,
             "bg_source_path": ""
           },
           {
             "type": "Postgres Sink",
             "id": "84760e05-5012-4dc7-b3bd-afa87658fec3",
-            "x": 953.6470588235293,
-            "y": 72.32198142414848,
+            "x": 947.7647058823527,
+            "y": 37.027863777089635,
             "width": 288,
-            "height": 389,
+            "height": 423,
             "collapsed": false,
             "subscribers": [],
             "host": "127.0.0.1",
@@ -81,10 +81,7 @@
         "password": "phdA9ZNW1vfkXdJkhhbP"
       }
     ],
-    "model_name": "YOLOv8",
-    "camera_url": "0",
-    "pi_uuid": "pi-default-001",
-    "source_path": "0",
+    "source_path": "rtsp://admin:Dcuk.123456@192.168.37.99/Stream",
     "hef_path": "/home/nightshadearia/EyeAria/yolov8s_h8l.hef",
     "so_path": "/home/nightshadearia/EyeAria/libyolo_hailortpp_post.so",
     "tracking_enabled": true,

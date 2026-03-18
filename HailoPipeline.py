@@ -16,57 +16,87 @@ Gst.init(None)
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
-class VideoSource:
-    def __init__(self, location):
+class VideoSource(ABC):
+    def __init__(self, location, rotation=0, flip_h=False, flip_v=False):
         self.location = location
+        self.rotation = rotation
+        self.flip_h = flip_h
+        self.flip_v = flip_v
 
-    def get_source_str(self):
-        return f"filesrc location={self.location} ! decodebin ! videoconvert ! video/x-raw, format=NV12"
+    def get_transform_str(self):
+        """Generates the GStreamer videoflip string based on config."""
+        transforms = []
+        if self.rotation == 90:
+            transforms.append("videoflip method=clockwise")
+        elif self.rotation == 180:
+            transforms.append("videoflip method=rotate-180")
+        elif self.rotation == 270:
+            transforms.append("videoflip method=counterclockwise")
+        
+        if self.flip_h:
+            transforms.append("videoflip method=horizontal-flip")
+        if self.flip_v:
+            transforms.append("videoflip method=vertical-flip")
+            
+        if transforms:
+            # videoconvert is needed around videoflip to ensure format compatibility
+            return " ! videoconvert ! " + " ! ".join(transforms)
+        return ""
+
+    @abstractmethod
+    def get_source_str(self): pass
+
 
 class FileSource(VideoSource):
-    def __init__(self, location, fps=30):
-        super().__init__(location)
+    def __init__(self, location, fps=30, rotation=0, flip_h=False, flip_v=False):
+        super().__init__(location, rotation, flip_h, flip_v)
         self.fps = fps
 
     def get_source_str(self):
-        # 'videorate' ensures the stream follows the specified framerate
         return (
-            f"filesrc location={self.location} ! decodebin ! "
+            f"filesrc location={self.location} ! decodebin"
+            f"{self.get_transform_str()} ! "
             f"videoconvert ! videorate ! "
             f"video/x-raw, framerate={self.fps}/1 ! queue"
         )
 
 class CameraSource(VideoSource):
     """
-    Source for hardware cameras (USB/Webcams) using V4L2.
+    Source for hardware cameras using libcamerasrc.
     """
-    def __init__(self, device_index=0, width=640, height=480, fps=30):
-        # Maps index 0 to /dev/video0
-        super().__init__(f"/dev/video{device_index}")
+    def __init__(self, device_index=0, width=640, height=480, fps=30, rotation=0, flip_h=False, flip_v=False):
+        super().__init__(str(device_index), rotation, flip_h, flip_v)
         self.width = width
         self.height = height
         self.fps = fps
 
     def get_source_str(self):
+        # Omitting the name for index 0 allows auto-binding to the primary camera
+        cam_prop = "" if self.location == "0" else f"camera-name={self.location}"
+        print(self.location)
+        
         return (
-            f"v4l2src device={self.location} ! "
-            f"video/x-raw, width={self.width}, height={self.height}, framerate={self.fps}/1 ! "
+            f"libcamerasrc {cam_prop} ! "
+            # FIX: We explicitly demand format=NV12 here so the Pi hardware ISP kicks in!
+            f"video/x-raw, format=NV12, width={self.width}, height={self.height}, framerate={self.fps}/1"
+            f"{self.get_transform_str()} ! "
             f"videoconvert ! video/x-raw, format=NV12 ! queue"
         )
 
 class RTSPSource(VideoSource):
-    def __init__(self, url, latency=200):
-        super().__init__(url)
+    def __init__(self, url, latency=200, rotation=0, flip_h=False, flip_v=False):
+        super().__init__(url, rotation, flip_h, flip_v)
         self.latency = latency
 
     def get_source_str(self):
-        # Added a queue after depay to stabilize the 'segment' event
         return (
             f"rtspsrc location={self.location} latency={self.latency} protocols=4 ! "
             f"application/x-rtp, media=video ! " 
-            f"rtph264depay ! h264parse ! decodebin ! queue max-size-buffers=5 ! "
+            f"rtph264depay ! h264parse ! decodebin"
+            f"{self.get_transform_str()} ! queue max-size-buffers=5 ! "
             f"videoconvert ! videorate ! video/x-raw, format=NV12, framerate=30/1"
         )
+
 
 class FrameAdapter(ABC):
     @abstractmethod

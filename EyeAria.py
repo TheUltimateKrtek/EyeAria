@@ -48,6 +48,12 @@ class PipelineApp:
         
         self.active_node = None
         self.view_box = None
+    
+    def adjust_zoom(self, delta):
+        """Helper for on-screen zoom buttons."""
+        self.zoom = max(0.2, min(3.0, self.zoom + delta))
+        self._update_viewport()
+
 
     def add_node_dialog(self, parent_node: Optional[Node] = None):
         with ui.dialog() as dialog, ui.card().classes('w-80 p-4'):
@@ -92,14 +98,16 @@ class PipelineApp:
 
     def toggle_pipeline(self, button):
         """Toggles the pipeline state and updates the button UI."""
+        # Find the child label inside the button to update its text
+        label = next((c for c in button.default_slot.children if isinstance(c, ui.label)), None)
+
         if self.is_running:
             # STOP THE PIPELINE
             if self.root_node:
                 self.root_node.stop()
             self.is_running = False
             
-            # Update button to show "START" state
-            button.set_text('START PIPELINE')
+            if label: label.set_text('START PIPELINE')
             button.props('icon=play_arrow color=emerald')
         else:
             # START THE PIPELINE
@@ -107,9 +115,9 @@ class PipelineApp:
                 self.root_node.start()
             self.is_running = True
             
-            # Update button to show "STOP" state
-            button.set_text('STOP PIPELINE')
+            if label: label.set_text('STOP PIPELINE')
             button.props('icon=stop color=red')
+
             
     # ==========================================
     # THE CANVAS RENDERING ENGINE
@@ -119,49 +127,55 @@ class PipelineApp:
         self.container.clear()
         
         with self.container:
-            # Add a grid background to the outer container
+            # Add a grid background and use touch-action: none to STOP the browser from scrolling
             grid_style = (
                 'background-size: 40px 40px; '
-                'background-image: radial-gradient(circle, #cbd5e1 1px, transparent 1px);'
+                'background-image: radial-gradient(circle, #cbd5e1 1px, transparent 1px); '
+                'touch-action: none;' 
             )
             outer = ui.element('div').classes('relative w-full h-[85vh] bg-slate-200 overflow-hidden select-none border-2') \
                 .style(grid_style)
+                
             with outer:
                 self.viewport = ui.element('div').classes('absolute w-full h-full').style(
                     f'transform-origin: 0 0; transform: translate({self.pan_x}px, {self.pan_y}px) scale({self.zoom});'
                 )
                 with self.viewport:
                     self.svg_container = ui.html('<svg width="100%" height="100%" style="overflow: visible;"></svg>', sanitize=False).classes('absolute top-0 left-0 w-full h-full pointer-events-none z-0')
+                    
                     if not self.root_node:
-                        ui.button('ADD SOURCE NODE', on_click=lambda: self.add_node_dialog(None)).classes('absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 shadow-lg').props('icon=add color=green')
+                        # Added pointerdown.stop so tapping the button works and doesn't pan
+                        ui.button('ADD SOURCE NODE', on_click=lambda: self.add_node_dialog(None)) \
+                            .classes('absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 shadow-lg') \
+                            .props('icon=add color=green') \
+                            .on('pointerdown.stop', lambda: None)
                     else:
                         self._render_nodes(self.root_node, is_mini=False)
                         ui.timer(0.05, self.redraw_wires, once=True)
                 
                 if self.root_node: self._render_minimap()
 
-                # Reset View Button
-                with ui.button(on_click=self.reset_view).props('flat round size=lg').classes('absolute bottom-4 right-4 bg-white/30 backdrop-blur-md shadow-sm border border-white/20 z-50'):
-                    ui.icon('center_focus_strong').classes('text-slate-800/50')
-                    ui.tooltip('Reset View')
+                # On-Screen View Controls (Added pointerdown.stop to protect them)
+                with ui.row().classes('absolute bottom-4 right-4 z-50 gap-2').on('pointerdown.stop', lambda: None):
+                    with ui.button(on_click=lambda: self.adjust_zoom(-0.2)).props('flat round size=lg').classes('bg-white/50 backdrop-blur-md shadow-sm border border-slate-300'):
+                        ui.icon('remove').classes('text-slate-800')
+                    with ui.button(on_click=lambda: self.adjust_zoom(0.2)).props('flat round size=lg').classes('bg-white/50 backdrop-blur-md shadow-sm border border-slate-300'):
+                        ui.icon('add').classes('text-slate-800')
+                    with ui.button(on_click=self.reset_view).props('flat round size=lg').classes('bg-white/50 backdrop-blur-md shadow-sm border border-slate-300'):
+                        ui.icon('center_focus_strong').classes('text-slate-800')
+                        ui.tooltip('Reset View')
             
+            # --- CENTRALIZED EVENT MANAGEMENT ---
             def get_coords(e):
-                if 'touches' in e.args and len(e.args['touches']) > 0:
-                    return e.args['touches'][0]['clientX'], e.args['touches'][0]['clientY']
                 return e.args.get('clientX', 0), e.args.get('clientY', 0)
 
-            # --- CENTRALIZED EVENT MANAGEMENT ---
             def handle_move(e):
-                mx = e.args['touches'][0]['clientX'] if 'touches' in e.args else e.args['clientX']
-                my = e.args['touches'][0]['clientY'] if 'touches' in e.args else e.args['clientY']
+                mx, my = get_coords(e)
                 
                 if self.active_node:
-                    # Calculate new coordinates
                     self.active_node.x = (mx - self.pan_x) / self.zoom - self.active_node.offset_x
                     self.active_node.y = (my - self.pan_y) / self.zoom - self.active_node.offset_y
-                    # 1. Update main node
                     self.active_node.card.style(f'left: {self.active_node.x}px; top: {self.active_node.y}px;')
-                    # 2. THE FIX: Update minimap node in real-time
                     if self.active_node.mini_card:
                         self.active_node.mini_card.style(f'left: {self.active_node.x}px; top: {self.active_node.y}px; width: {self.active_node.width}px; height: {self.active_node.height}px;')
                     self.redraw_wires()
@@ -175,24 +189,32 @@ class PipelineApp:
                 self.is_panning = True
                 self.last_mouse_x, self.last_mouse_y = get_coords(e)
 
-            def handle_stop():
+            def handle_stop(e=None):
                 self.is_panning = False
                 if self.active_node:
                     self.active_node.card.style('z-index: 10;')
                     self.active_node = None
             
             def handle_wheel(e):
-                self.zoom = max(0.2, min(3.0, self.zoom + (0.05 if e.args.get('deltaY', 0) < 0 else -0.05)))
-                self._update_viewport()
+                self.adjust_zoom(0.05 if e.args.get('deltaY', 0) < 0 else -0.05)
 
-            outer.on('mousedown', handle_bg_mousedown)
-            outer.on('touchstart', handle_bg_mousedown)
-            
-            ui.on('mousemove', handle_move)
-            ui.on('touchmove', handle_move)
-            ui.on('mouseup', handle_stop)
-            ui.on('touchend', handle_stop)
-            outer.on('wheel', handle_wheel, throttle=0.01)
+            # Bind Canvas using Modern Pointer Events
+            pointer_args = ['clientX', 'clientY']
+
+            outer.on('pointerdown', handle_bg_mousedown, args=pointer_args)
+            outer.on('pointermove', handle_move, args=pointer_args)
+            outer.on('pointerup', handle_stop)
+            outer.on('pointerleave', handle_stop)
+            outer.on('pointercancel', handle_stop)
+            outer.on('wheel', handle_wheel, args=['deltaY'], throttle=0.01)
+
+    # --- MINIMAP RENDER FIX ---
+    def _render_minimap(self):
+        """Creates a birds-eye view that tracks movements."""
+        # Added pointerdown.stop so tapping the minimap doesn't pan the canvas behind it
+        with ui.card().classes('absolute top-4 right-4 w-40 h-40 p-0 overflow-hidden bg-slate-800/90 border border-slate-600 shadow-xl z-50').on('pointerdown.stop', lambda: None):
+            with ui.element('div').classes('relative w-full h-full').style('transform: scale(0.05) translate(100px, 100px); transform-origin: 0 0;'):
+                self._render_nodes(self.root_node, is_mini=True)
 
     def _update_viewport(self):
         """Applies the current pan and zoom to the UI."""
@@ -322,15 +344,33 @@ def main():
         ui.label('EyeAria').classes('font-mono text-xl font-bold')
         
         with ui.row().classes('items-center gap-2'):
-            ui.button('EXPORT', icon='file_download', on_click=app.logic.export_pipeline)\
-                .props('flat color=white size=sm')
-            ui.button('IMPORT', icon='file_upload', on_click=app.logic.import_pipeline)\
-                .props('flat color=white size=sm')
+            # Hidden text on mobile, visible on medium screens and up
+            ui.button(icon='file_download', on_click=app.logic.export_pipeline)\
+                .props('flat color=white size=sm')\
+                .classes('px-2 md:px-4')\
+                .tooltip('Export Pipeline')
             
-            ui.separator().props('vertical').classes('mx-2 bg-slate-700 h-6')
+            ui.button(icon='file_upload', on_click=app.logic.import_pipeline)\
+                .props('flat color=white size=sm')\
+                .classes('px-2 md:px-4')\
+                .tooltip('Import Pipeline')
             
-            btn = ui.button('START PIPELINE', icon='play_arrow', on_click=lambda e: app.logic.toggle_pipeline(e.sender)) \
-                .props('color=emerald unelevated').classes('font-bold shadow-sm')
+            ui.separator().props('vertical').classes('mx-1 md:mx-2 bg-slate-700 h-6')
+            
+            # The play button needs dynamic text, so we use a child label to control visibility
+            btn = ui.button(on_click=lambda e: app.logic.toggle_pipeline(e.sender)) \
+                .props('icon=play_arrow color=emerald unelevated').classes('font-bold shadow-sm px-2 md:px-4')
+            with btn:
+                ui.label('START PIPELINE').classes('hidden md:block ml-2')
+
+            ui.separator().props('vertical').classes('mx-1 md:mx-2 bg-slate-700 h-6')
+            
+            # The Magical Kill Switch
+            kill_btn = ui.button(on_click=app.shutdown) \
+                .props('icon=power_settings_new color=red-8 unelevated').classes('font-bold shadow-sm px-2 md:px-4')
+            with kill_btn:
+                ui.label('POWER WORD: KILL').classes('hidden md:block ml-2')
+
     
     # Render the Canvas Container
     with ui.column().classes('p-0 w-full h-full m-0') as container:

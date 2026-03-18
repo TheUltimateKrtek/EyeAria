@@ -4,7 +4,9 @@ import queue
 import json
 import time
 import uuid
+import glob
 import subprocess
+import re
 from nicegui import ui
 from Node import Node, NodeRegistry
 from Schema import Detection, PipelinePayload
@@ -39,7 +41,6 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
     def __init__(self):
         super().__init__()
         # Basic Configuration
-        self.source_path = "detection0.mp4"
         self.hef_path = "yolov8s_h8l.hef"
         self.so_path = "libyolo_hailortpp_post.so"
 
@@ -57,7 +58,90 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
         self.pipeline_thread = None
         self.data_queue = queue.Queue()
         self.poll_timer = None
+        
+        # Basic Configuration
+        self.source_type = "Camera"  # Can be "Camera" or "Stream/File"
+        self.source_path = "detection0.mp4"
+        self.camera_index = 0
+        self.camera_resolution_str = "640,480,30" # Format: width,height,fps
+        
+        # Camera Transforms
+        self.rotation = 0
+        self.flip_h = False
+        self.flip_v = False
     
+    def get_available_cameras(self):
+        """Scans /dev/video* and returns a dictionary for the UI dropdown."""
+        cams = glob.glob('/dev/video*')
+        indices = []
+        for cam in cams:
+            try:
+                # Extract the numeric index from the path
+                num = int(cam.replace('/dev/video', ''))
+                indices.append(num)
+            except ValueError:
+                pass
+        
+        indices.sort()
+        if not indices:
+            return {0: '0 (No Camera Detected)'}
+        
+        # Format for the UI Select: {0: 'Camera 0', 1: 'Camera 1', ...}
+        return {i: f"Camera {i}" for i in indices}
+    
+    def get_real_cameras_and_formats(self):
+        """Uses rpicam/libcamera to find Pi Camera modules and their exact physical modes."""
+        cameras = {}
+        formats = {}
+
+        try:
+            # Try Bookworm's rpicam first, fallback to Bullseye's libcamera
+            try:
+                result = subprocess.run(['rpicam-hello', '--list-cameras'], capture_output=True, text=True, timeout=2.0)
+            except FileNotFoundError:
+                result = subprocess.run(['libcamera-hello', '--list-cameras'], capture_output=True, text=True, timeout=2.0)
+            
+            lines = result.stdout.split('\n')
+            current_cam_idx = None
+            
+            for line in lines:
+                line = line.strip()
+                
+                # Match camera definition: "0 : imx708 [4608x2592 10-bit RGGB]"
+                cam_match = re.match(r'^(\d+)\s*:\s*(\w+)', line)
+                if cam_match:
+                    current_cam_idx = int(cam_match.group(1))
+                    cam_name = cam_match.group(2)
+                    cameras[current_cam_idx] = f"Camera {current_cam_idx} ({cam_name})"
+                    formats[current_cam_idx] = {}
+                    
+                    # Pre-load standard scaled resolutions. The Pi ISP can scale the sensor natively.
+                    standard_modes = [("1920", "1080", "30"), ("1280", "720", "30"), ("640", "480", "30")]
+                    for w, h, fps in standard_modes:
+                        formats[current_cam_idx][f"{w},{h},{fps}"] = f"{w}x{h} @ {fps}fps (Scaled)"
+                
+                # Match physical sensor modes: "1536x864 [120.13 fps - (0, 0)/0x0 crop]"
+                mode_match = re.search(r'(\d+)x(\d+)\s*\[([\d\.]+)\s*fps', line)
+                if mode_match and current_cam_idx is not None:
+                    w = mode_match.group(1)
+                    h = mode_match.group(2)
+                    fps = str(int(float(mode_match.group(3))))
+                    
+                    val_str = f"{w},{h},{fps}"
+                    lbl_str = f"{w}x{h} @ {fps}fps (Native)"
+                    
+                    # Overwrite if it already exists to prefer the "Native" label
+                    formats[current_cam_idx][val_str] = lbl_str
+
+        except Exception as e:
+            print(f"Error scanning libcamera: {e}")
+                
+        if not cameras:
+            cameras = {0: "Camera 0 (Fallback)"}
+            formats = {0: {"640,480,30": "640x480 @ 30fps"}}
+            
+        return cameras, formats
+        
     def trigger_system_scan(self, force=False):
         if self.__class__._is_scanning: return
         if self.__class__._scan_complete and not force: return
@@ -106,11 +190,12 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
             return new_uuid
 
     def on_data_received(self, frame, raw_detections):
+        import re 
+        
         # raw_detections are dicts from AppSink, map them to the Schema
         schema_detections = [Detection(**d) for d in raw_detections]
         
         # Dynamically extract the model name from the HEF file path
-        # e.g., "/path/to/yolov8s_h8l.hef" -> "yolov8s_h8l"
         derived_model_name = os.path.splitext(os.path.basename(self.hef_path))[0]
         
         # Update the UI status label directly
@@ -118,17 +203,26 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
             self.status_label.set_text(
                 f"Detections: {len(schema_detections)} (Tracked: {self.tracking_enabled})"
             )
+
+        # --- DETERMINE THE ACTIVE SOURCE NAME ---
+        if self.source_type == 'Camera':
+            # Use the camera index and resolution instead of a URL
+            active_source_name = f"Camera {self.camera_index} ({self.camera_resolution_str})"
+        else:
+            # Mask RTSP credentials (rtsp://user:pass@ip -> rtsp://***:***@ip)
+            active_source_name = re.sub(r'(://)([^:]+):([^@]+)(@)', r'\1***:***\4', self.source_path)
             
         payload = PipelinePayload(
             timestamp=time.time(),
-            config={"source": self.source_path, "hef": self.hef_path, "tracking": self.tracking_enabled},
+            config={"source": active_source_name, "hef": self.hef_path, "tracking": self.tracking_enabled},
             count=len(schema_detections),
             model_name=derived_model_name,
             pi_uuid=self.pi_uuid,
-            camera_url=self.source_path,  # Maps directly to your first text field!
+            camera_url=active_source_name,  # Correctly reflects the active hardware or stream
             detections=schema_detections,
             frame=frame
         )
+        
         # Notify pushes it straight into the graph
         self.notify(payload)
         
@@ -140,13 +234,27 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
 
     def _start(self):
         # 1. Setup Source based on input type
-        if self.source_path.isdigit():
-            # Treat as hardware camera index (e.g., "0")
-            source = CameraSource(device_index=int(self.source_path))
+        if self.source_type == 'Camera':
+            try:
+                w, h, fps = map(int, self.camera_resolution_str.split(','))
+            except:
+                w, h, fps = 640, 480, 30
+                
+            source = CameraSource(
+                device_index=self.camera_index,
+                width=w,
+                height=h,
+                fps=fps,
+                rotation=self.rotation, 
+                flip_h=self.flip_h, 
+                flip_v=self.flip_v
+            )
         else:
-            # Treat as RTSP URL or Local File
             is_rtsp = any(self.source_path.startswith(prefix) for prefix in ["rtsp://", "rtmp://", "http://"])
-            source = RTSPSource(self.source_path) if is_rtsp else FileSource(self.source_path)
+            if is_rtsp:
+                source = RTSPSource(self.source_path, rotation=self.rotation, flip_h=self.flip_h, flip_v=self.flip_v)
+            else:
+                source = FileSource(self.source_path, rotation=self.rotation, flip_h=self.flip_h, flip_v=self.flip_v)
 
         # 2. Setup Inference Components
         adapter = LetterboxAdapter() 
@@ -204,11 +312,53 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
             self.pipeline = None
 
     def create_content(self):
-        # 1. Hardware Config Panel
+        # 1. Source Config Panel
+        with ui.column().classes('bg-emerald-50 border border-slate-200 border-l-4 border-l-emerald-500 w-full p-2 mb-2 shadow-sm gap-1'):
+            with ui.row().classes('w-full items-center justify-between'):
+                ui.label("SOURCE CONFIG").classes('text-[10px] font-bold text-emerald-800')
+                ui.radio(['Camera', 'Stream/File'], value=self.source_type).bind_value(self, 'source_type').props('inline dense size=sm')
+
+            # --- CAMERA UI ---
+            with ui.column().bind_visibility_from(self, 'source_type', lambda t: t == 'Camera').classes('w-full gap-1'):
+                
+                # Fetch true cameras dynamically
+                cameras, formats = self.get_real_cameras_and_formats()
+                
+                def update_resolutions(e):
+                    # Prevent the error if the event fires before self.res_select is created
+                    if not hasattr(self, 'res_select'):
+                        return
+                        
+                    cam_idx = e.value
+                    # Update the options dictionary of the resolution dropdown
+                    self.res_select.options = formats.get(cam_idx, {"640,480,30": "640x480 @ 30fps"})
+                    # Auto-select the first available resolution
+                    self.res_select.value = list(self.res_select.options.keys())[0] if self.res_select.options else None
+                    self.res_select.update()
+
+                cam_select = ui.select(cameras, label="Select Camera Device", on_change=update_resolutions) \
+                    .bind_value(self, 'camera_index').classes('w-full text-xs').props('dense')
+                
+                current_formats = formats.get(self.camera_index, {"640,480,30": "640x480 @ 30fps"})
+                
+                # Attach to 'self' to bypass the local closure limitation
+                self.res_select = ui.select(current_formats, label="Native Resolution & FPS") \
+                    .bind_value(self, 'camera_resolution_str').classes('w-full text-xs').props('dense')
+
+            # --- STREAM/FILE UI ---
+            with ui.column().bind_visibility_from(self, 'source_type', lambda t: t == 'Stream/File').classes('w-full gap-1'):
+                ui.input(label="Source URL/Path (RTSP, MP4)").bind_value(self, 'source_path').classes('w-full text-xs').props('dense')
+
+            # --- SHARED TRANSFORMS ---
+            with ui.row().classes('w-full items-center gap-2 no-wrap mt-1'):
+                ui.select({0: '0°', 90: '90°', 180: '180°', 270: '270°'}, label="Rotation") \
+                    .bind_value(self, 'rotation').classes('w-16 text-xs').props('dense')
+                ui.checkbox("Flip H").bind_value(self, 'flip_h').classes('text-[10px] text-slate-700').props('dense size=sm')
+                ui.checkbox("Flip V").bind_value(self, 'flip_v').classes('text-[10px] text-slate-700').props('dense size=sm')
+
+        # 2. Hailo Config Panel
         with ui.column().classes('bg-slate-50 border border-slate-200 border-l-4 border-l-slate-500 w-full p-2 mb-2 shadow-sm gap-1'):
-            
-            ui.label("HARDWARE CONFIG").classes('text-[10px] font-bold text-slate-700')
-            ui.input(label="Source URL/Path").bind_value(self, 'source_path').classes('w-full text-xs').props('dense')
+            ui.label("HAILO CONFIG").classes('text-[10px] font-bold text-slate-700')
             
             # HEF Search Row
             with ui.row().classes('w-full items-center gap-1 no-wrap'):
@@ -222,12 +372,10 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
                 ui.button(icon='search', on_click=lambda: self.show_search_dialog('so_path', 'so')) \
                     .props('flat round dense color=blue size=sm')
             
-
-            
             # Start the background scan silently on boot
             self.trigger_system_scan()
             
-        # 2. Object Permanence Panel (Removed 'rounded')
+        # 3. Object Permanence Panel
         with ui.column().classes('bg-blue-50 border border-slate-200 border-l-4 border-l-blue-500 w-full p-2 mb-2 shadow-sm gap-1'):
             ui.label("OBJECT PERMANENCE").classes('text-[10px] font-bold text-blue-700')
             
@@ -238,9 +386,10 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
                 ui.number(label="Keep Lost", format="%d").bind_value(self, 'keep_lost_frames').classes('w-full text-xs').props('dense')
                 ui.label("Higher values keep IDs longer.").classes('text-[9px] text-slate-500 italic leading-tight')
             
-        # 3. Status Display
+        # 4. Status Display
         with ui.row().classes('w-full items-center justify-between px-2'):
             self.status_label = ui.label("Status: Idle").classes("text-[10px] text-slate-500 font-mono")
+
 
     def show_search_dialog(self, target_attr, file_type):
         """Displays a live, searchable dialog for cached files."""
@@ -346,7 +495,13 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
     def save(self) -> dict:
         base = super().save()
         base.update({
+            "source_type": self.source_type,
             "source_path": self.source_path,
+            "camera_index": self.camera_index,
+            "camera_resolution_str": self.camera_resolution_str, # <--- NEW
+            "rotation": self.rotation,
+            "flip_h": self.flip_h,
+            "flip_v": self.flip_v,
             "hef_path": self.hef_path,
             "so_path": self.so_path,
             "tracking_enabled": self.tracking_enabled,
@@ -356,7 +511,13 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
         return base
 
     def _load_config(self, data: dict):
+        self.source_type = data.get("source_type", "Camera")
         self.source_path = data.get("source_path", "")
+        self.camera_index = data.get("camera_index", 0)
+        self.camera_resolution_str = data.get("camera_resolution_str", "640,480,30") # <--- NEW
+        self.rotation = data.get("rotation", 0)
+        self.flip_h = data.get("flip_h", False)
+        self.flip_v = data.get("flip_v", False)
         self.hef_path = data.get("hef_path", "")
         self.so_path = data.get("so_path", "")
         self.tracking_enabled = data.get("tracking_enabled", False)

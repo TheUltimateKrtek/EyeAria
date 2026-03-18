@@ -21,7 +21,7 @@ class PipelinePayload:
     pi_uuid: str = ""
     camera_url: str = ""
     detections: List[Detection] = field(default_factory=list)
-    frame: Optional[Any] = field(default=None, repr=False)
+    frame: Any = None
 
     def copy(self) -> 'PipelinePayload':
         """
@@ -42,12 +42,12 @@ class PipelinePayload:
         
         return cloned
 
-    def to_json(self) -> str:
+    def to_json(self, indent: int = None) -> str:
         """Serializes the strictly-typed object back into a JSON string."""
         d = asdict(self)
         # Drop the frame so it is completely ignored by text logs and network sinks
         d.pop('frame', None) 
-        return json.dumps(d)
+        return json.dumps(d, indent=indent)
 
     @classmethod
     def from_json(cls, json_str: str) -> 'PipelinePayload':
