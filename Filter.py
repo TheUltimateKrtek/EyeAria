@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 from nicegui import ui
 from Node import Node, NodeRegistry
-from Schema import PipelinePayload, Detection
+from Schema import PipelinePayload
 
 # ==========================================
 # MODULAR CONDITION CLASSES
@@ -179,6 +179,25 @@ class FilterNode(Node):
         self.conditions = []
         self.logic_mode = "AND" 
         self.conditions_container = None
+        self.available_modules = []
+        self.target_module = None
+
+    def on_schema_update(self, template: dict) -> bool:
+        # 1. Discover what modules exist in the pipeline right now
+        if "modules" in template:
+            self.available_modules = list(template["modules"].keys())
+            
+            # 2. Update UI Dropdowns (assuming you create a module_select UI element)
+            if hasattr(self, 'module_select'):
+                self.module_select.options = self.available_modules
+                self.module_select.update()
+
+        # 3. Validation: If the user configured this filter for 'camera_left', 
+        # but 'camera_left' is no longer in the template, return False to block startup!
+        if self.target_module and self.target_module not in self.available_modules:
+            return False 
+            
+        return True
 
     def _start(self):
         pass

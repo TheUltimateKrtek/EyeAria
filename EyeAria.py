@@ -34,7 +34,7 @@ def auto_import_nodes():
 
 class PipelineApp:
     def __init__(self):
-        self.root_node: Optional[Node] = None
+        self.root_node = NodeRegistry.get("Input Gateway")()
         self.container = None
         self.svg_container = None
 
@@ -48,6 +48,9 @@ class PipelineApp:
         
         self.active_node = None
         self.view_box = None
+
+        self.root_node.x = 400
+        self.root_node.y = 300
     
     def adjust_zoom(self, delta):
         """Helper for on-screen zoom buttons."""
@@ -55,66 +58,84 @@ class PipelineApp:
         self._update_viewport()
 
 
-    def add_node_dialog(self, parent_node: Optional[Node] = None):
+    def add_node_dialog(self, target_node: Optional[Node] = None, mode: str = 'output'):
         with ui.dialog() as dialog, ui.card().classes('w-80 p-4'):
-            ui.label("Select Node Type").classes('text-lg font-bold mb-4')
+            ui.label(f"Add {mode.capitalize()} Node").classes('text-lg font-bold mb-4')
             
             for name, cls in NodeRegistry.get_all().items():
-                is_source = not cls.has_input
-                show = False
+                if getattr(cls, 'is_gateway', False): continue # Prevent adding a 2nd gateway
                 
-                # Filter logic: Root must be a source. Children must accept inputs.
-                if parent_node is None and is_source:
+                show = False
+                if mode == 'input' and not cls.has_input:  # Show sources
                     show = True
-                elif parent_node is not None and not is_source:
+                elif mode == 'output' and cls.has_input:   # Show processors
                     show = True
                 
                 if show:
-                    ui.button(name, on_click=lambda n=name: self.create_node(n, parent_node, dialog))\
+                    ui.button(name, on_click=lambda n=name: self.create_node(n, target_node, dialog, mode))\
                         .props('outline').classes('w-full mb-2')
             
             ui.button('Close', on_click=dialog.close).props('flat').classes('w-full mt-2')
         dialog.open()
 
-    def create_node(self, name, parent, dialog):
+    def create_node(self, name, target_node, dialog, mode='output'):
         node = NodeRegistry.get(name)()
         
-        if parent:
-            # Spawn slightly to the right of the parent
-            node.x = parent.x + getattr(parent, 'width', 280) + 50
-            node.y = parent.y
-            parent.add_subscriber(node)
-        else:
-            self.root_node = node
+        if mode == 'output' and target_node:
+            node.x = target_node.x + getattr(target_node, 'width', 280) + 50
+            node.y = target_node.y
+            target_node.add_subscriber(node)
+        elif mode == 'input' and target_node:
+            # Spawn to the LEFT of the gateway
+            node.x = target_node.x - getattr(node, 'width', 280) - 50
+            node.y = target_node.y
+            if hasattr(target_node, 'add_input_node'):
+                target_node.add_input_node(node)
             
         dialog.close()
         self.refresh_ui()
 
     def delete_node(self, node):
+        if not getattr(node, 'deletable', True): 
+            ui.notify("The Input Gateway cannot be deleted.", color='warning')
+            return
+            
         if node.parent: node.parent.remove_subscriber(node)
-        elif node == self.root_node: self.root_node = None
+        
+        # Disconnect from Gateway if it was an input
+        if hasattr(self.root_node, 'input_nodes') and node in self.root_node.input_nodes:
+            self.root_node.remove_input_node(node)
+            
         node.stop()
         self.refresh_ui()
 
     def toggle_pipeline(self, button):
-        """Toggles the pipeline state and updates the button UI."""
-        # Find the child label inside the button to update its text
         label = next((c for c in button.default_slot.children if isinstance(c, ui.label)), None)
 
         if self.is_running:
-            # STOP THE PIPELINE
-            if self.root_node:
-                self.root_node.stop()
+            # ... STOP PIPELINE LOGIC (unchanged) ...
+            if self.root_node: self.root_node.stop()
             self.is_running = False
-            
             if label: label.set_text('START PIPELINE')
             button.props('icon=play_arrow color=emerald')
         else:
-            # START THE PIPELINE
+            # === THE NEW PRE-FLIGHT CHECK ===
             if self.root_node:
+                # 1. Ask the root node to generate the master template
+                # (Assuming your root is the new Rendezvous/Gateway node)
+                master_template = self.root_node.generate_template()
+                
+                # 2. Force-feed the template down the tree
+                is_valid = self.root_node.push_schema(master_template)
+                
+                if not is_valid:
+                    ui.notify("Pipeline compilation failed! Check node configurations.", color='negative', position='top')
+                    return # ABORT STARTUP!
+
+                # 3. If everything is valid, start the pipeline
                 self.root_node.start()
+                
             self.is_running = True
-            
             if label: label.set_text('STOP PIPELINE')
             button.props('icon=stop color=red')
 
@@ -220,36 +241,42 @@ class PipelineApp:
         """Applies the current pan and zoom to the UI."""
         self.viewport.style(f'transform: translate({self.pan_x}px, {self.pan_y}px) scale({self.zoom});')
 
-    def _render_nodes(self, node: Node, is_mini: bool = False):
-        """Recursively instantiate the node UI components on the canvas."""
+    def _render_nodes(self, node: Node, is_mini: bool = False, visited=None):
+        if visited is None: visited = set()
+        if node.id in visited: return
+        visited.add(node.id)
+        
         node.build_node_ui(is_mini=is_mini)
         for sub in node.subscribers:
-            self._render_nodes(sub, is_mini=is_mini)
+            self._render_nodes(sub, is_mini=is_mini, visited=visited)
+            
+        # Traverse left side
+        if hasattr(node, 'input_nodes'):
+            for inp in node.input_nodes:
+                self._render_nodes(inp, is_mini=is_mini, visited=visited)
 
     def redraw_wires(self):
-        """Calculates Bezier curves connecting all parent/child nodes."""
-        if not self.root_node or not self.svg_container:
-            return
+        if not self.root_node or not self.svg_container: return
             
         svg_content = '<svg width="100%" height="100%" style="overflow: visible;">'
         
-        def draw_branch(node):
+        def draw_branch(node, visited=None):
             nonlocal svg_content
+            if visited is None: visited = set()
+            if node.id in visited: return
+            visited.add(node.id)
             
             parent_w = getattr(node, 'width', 280)
             parent_h = getattr(node, 'height', 100)
-            
-            # Start at the Middle-Right of the parent
             start_x = node.x + parent_w
             start_y = node.y + (parent_h / 2)
 
+            # Draw Output Wires (Right side)
             for child in node.subscribers:
                 child_h = getattr(child, 'height', 100)
-                # End at the Middle-Left of the child
                 end_x = child.x
                 end_y = child.y + (child_h / 2)
 
-                # Bezier Control Points (Creates the S-Curve)
                 ctrl_1_x = start_x + max(50, (end_x - start_x) / 2)
                 ctrl_1_y = start_y
                 ctrl_2_x = end_x - max(50, (end_x - start_x) / 2)
@@ -257,13 +284,32 @@ class PipelineApp:
 
                 path = f'<path d="M {start_x} {start_y} C {ctrl_1_x} {ctrl_1_y}, {ctrl_2_x} {ctrl_2_y}, {end_x} {end_y}" fill="none" stroke="#94a3b8" stroke-width="3" />'
                 svg_content += path
+                draw_branch(child, visited)
                 
-                draw_branch(child)
+            # Draw Input Wires (Left side feeding INTO gateway)
+            if hasattr(node, 'input_nodes'):
+                for inp in node.input_nodes:
+                    inp_w = getattr(inp, 'width', 280)
+                    inp_h = getattr(inp, 'height', 100)
+                    i_start_x = inp.x + inp_w
+                    i_start_y = inp.y + (inp_h / 2)
+                    
+                    i_end_x = node.x
+                    i_end_y = node.y + (parent_h / 2)
+                    
+                    ctrl_1_x = i_start_x + max(50, (i_end_x - i_start_x) / 2)
+                    ctrl_1_y = i_start_y
+                    ctrl_2_x = i_end_x - max(50, (i_end_x - i_start_x) / 2)
+                    ctrl_2_y = i_end_y
+                    
+                    path = f'<path d="M {i_start_x} {i_start_y} C {ctrl_1_x} {ctrl_1_y}, {ctrl_2_x} {ctrl_2_y}, {i_end_x} {i_end_y}" fill="none" stroke="#94a3b8" stroke-width="3" />'
+                    svg_content += path
+                    draw_branch(inp, visited)
                 
         draw_branch(self.root_node)
         svg_content += '</svg>'
         self.svg_container.set_content(svg_content)
-    
+        
     def reset_view(self):
         """Snaps the canvas back to origin."""
         self.pan_x = 0

@@ -30,6 +30,8 @@ class Node(abc.ABC):
     has_input: bool = True
     has_output: bool = True
     node_color: str = "slate-800" # Default color
+    deletable: bool = True
+    is_gateway: bool = False
 
     _spawn_offset = 0 
 
@@ -50,12 +52,41 @@ class Node(abc.ABC):
         self.card = None
         self.mini_card = None
 
+    def push_schema(self, template: dict) -> bool:
+        """
+        Force-feeds the schema down the tree. 
+        Returns True if the branch is ready, False if configuration is broken.
+        """
+        # 1. Evaluate this node's readiness
+        is_ready = self.on_schema_update(template)
+        if not is_ready:
+            print(f"[!] Node {self._node_type_name} ({self.id}) failed schema validation.")
+            return False
+            
+        # 2. Push to all children
+        for sub in self.subscribers:
+            if not sub.push_schema(template):
+                return False
+                
+        return True
+
+    def on_schema_update(self, template: dict) -> bool:
+        """
+        OVERRIDE THIS IN CHILD CLASSES.
+        Read the template, update UI if needed. 
+        Return True if your current config is valid for this schema.
+        Default is True (e.g., MQTTSink doesn't care about schema shape).
+        """
+        return True
+
     def start(self):
+        if self.running: return
         self.running = True
         self._start()
         for sub in self.subscribers: sub.start()
 
     def stop(self):
+        if not self.running: return
         self.running = False
         self._stop()
         for sub in self.subscribers: sub.stop()
@@ -111,11 +142,8 @@ class Node(abc.ABC):
                 ui.button(icon=icon, on_click=self.toggle_collapse).props('flat round dense text-white size=sm')
                 ui.label(self._node_type_name).classes('font-bold text-[11px] grow cursor-move')
                 
-                if self.has_output:
-                    ui.button(icon='add', on_click=lambda: app.logic.add_node_dialog(self)).props('flat round dense text-green-400 size=sm')
-                
-                # Replaced the menu with a direct delete button
-                ui.button(icon='close', on_click=lambda: app.logic.delete_node(self)).props('flat round dense text-red-400 size=sm')
+                # --- REPLACE THE HARDCODED BUTTONS WITH THIS ---
+                self.build_header_buttons()
 
             if not self.collapsed:
                 with ui.column().classes('p-2 w-full'):
@@ -141,6 +169,14 @@ class Node(abc.ABC):
         # .stop prevents the canvas from panning when dragging a node
         handle.on('pointerdown.stop', start_drag, args=['clientX', 'clientY'])
 
+    def build_header_buttons(self):
+        """Overrideable method for rendering header buttons."""
+        if self.has_output:
+            ui.button(icon='add', on_click=lambda: app.logic.add_node_dialog(self, 'output')) \
+                .props('flat round dense text-green-400 size=sm').tooltip('Add Output')
+        if self.deletable:
+            ui.button(icon='close', on_click=lambda: app.logic.delete_node(self)) \
+                .props('flat round dense text-red-400 size=sm').tooltip('Delete Node')
 
     def toggle_collapse(self):
         self.collapsed = not self.collapsed
@@ -173,12 +209,13 @@ class Node(abc.ABC):
             "id": self.id,
             "x": self.x,
             "y": self.y,
-            "width": self.width,   # Added persistence for dimensions
-            "height": self.height, # Added persistence for dimensions
+            "width": self.width,   
+            "height": self.height, 
             "collapsed": self.collapsed,
-            "subscribers": [sub.save() for sub in self.subscribers]
+            # Prevent saving the Gateway inside an input node's subscribers to avoid infinite recursion
+            "subscribers": [sub.save() for sub in self.subscribers if not getattr(sub, 'is_gateway', False)]
         }
-
+        
     @classmethod
     def load(cls, data: dict) -> 'Node':
         node_type = data.get("type")

@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field, asdict
 import os
 import threading
 import queue
@@ -7,9 +8,11 @@ import uuid
 import glob
 import subprocess
 import re
+import copy
 from nicegui import ui
 from Node import Node, NodeRegistry
-from Schema import Detection, PipelinePayload
+from typing import List, Dict, Any, Optional
+from Schema import ModuleData
 
 # Import updated components from HailoPipeline
 try:
@@ -27,6 +30,73 @@ except ImportError:
         def run(self): pass
         def stop(self): pass
         def get_raw_frame(self): return None
+
+@dataclass
+class HailoDetection:
+    """1:1 mapping for the objects inside the 'detections' list."""
+    label: str
+    confidence: float
+    bbox: List[float]  # [xmin, ymin, xmax, ymax]
+    track_id: int = -1
+
+@dataclass
+class HailoPayload:
+    """1:1 mapping for the root JSON payload."""
+    timestamp: float
+    config: Dict[str, Any]
+    count: int
+    model_name: str = ""
+    pi_uuid: str = ""
+    camera_url: str = ""
+    detections: List[HailoDetection] = field(default_factory=list)
+    frame: Any = None
+
+    def copy(self) -> 'PipelinePayload':
+        """
+        Creates a deep copy of the payload. 
+        Crucial for branching outputs so nodes don't mutate each other's data.
+        The frame is passed by reference to save memory and CPU.
+        """
+        # Temporarily detach the frame to avoid deepcopying the heavy numpy array
+        frame_ref = self.frame
+        self.frame = None
+        
+        # Deepcopy the rest of the lightweight metadata
+        cloned = copy.deepcopy(self)
+        
+        # Restore the frame reference to both the original and the clone
+        self.frame = frame_ref
+        cloned.frame = frame_ref
+        
+        return cloned
+
+    def to_json(self, indent: int = None) -> str:
+        """Serializes the strictly-typed object back into a JSON string."""
+        d = asdict(self)
+        # Drop the frame so it is completely ignored by text logs and network sinks
+        d.pop('frame', None) 
+        return json.dumps(d, indent=indent)
+
+    @classmethod
+    def from_json(cls, json_str: str) -> 'PipelinePayload':
+        return cls.from_dict(json.loads(json_str))
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'PipelinePayload':
+        detections_list = [HailoDetection(**det) for det in data.get("detections", [])]
+        config_data = data.get("config", {})
+        
+        return cls(
+            timestamp=data.get("timestamp", 0.0),
+            config=config_data,
+            count=data.get("count", len(detections_list)),
+            # Load explicitly from root dict, or fallback to config dictionary
+            model_name=data.get("model_name", config_data.get("model_name", "")),
+            pi_uuid=data.get("pi_uuid", config_data.get("pi_uuid", "")),
+            camera_url=data.get("camera_url", config_data.get("camera_url", "")),
+            detections=detections_list,
+            frame=data.get("frame", None)
+        )
 
 @NodeRegistry.register("Hailo")
 class HailoNode(Node, HailoListener): # Inherit from Listener
@@ -192,40 +262,56 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
     def on_data_received(self, frame, raw_detections):
         import re 
         
-        # raw_detections are dicts from AppSink, map them to the Schema
-        schema_detections = [Detection(**d) for d in raw_detections]
-        
-        # Dynamically extract the model name from the HEF file path
+        schema_detections = [HailoDetection(**d) for d in raw_detections]
         derived_model_name = os.path.splitext(os.path.basename(self.hef_path))[0]
         
-        # Update the UI status label directly
-        if hasattr(self, 'status_label'):
-            self.status_label.set_text(
-                f"Detections: {len(schema_detections)} (Tracked: {self.tracking_enabled})"
-            )
-
-        # --- DETERMINE THE ACTIVE SOURCE NAME ---
         if self.source_type == 'Camera':
-            # Use the camera index and resolution instead of a URL
             active_source_name = f"Camera {self.camera_index} ({self.camera_resolution_str})"
         else:
-            # Mask RTSP credentials (rtsp://user:pass@ip -> rtsp://***:***@ip)
             active_source_name = re.sub(r'(://)([^:]+):([^@]+)(@)', r'\1***:***\4', self.source_path)
             
-        payload = PipelinePayload(
-            timestamp=time.time(),
-            config={"source": active_source_name, "hef": self.hef_path, "tracking": self.tracking_enabled},
-            count=len(schema_detections),
-            model_name=derived_model_name,
-            pi_uuid=self.pi_uuid,
-            camera_url=active_source_name,  # Correctly reflects the active hardware or stream
-            detections=schema_detections,
-            frame=frame
+        # 1. Package ONLY the sensor's specific data into a dictionary
+        sensor_data = {
+            "config": {"source": active_source_name, "hef": self.hef_path, "tracking": self.tracking_enabled},
+            "count": len(schema_detections),
+            "model_name": derived_model_name,
+            "pi_uuid": self.pi_uuid,
+            "camera_url": active_source_name,
+            "detections": schema_detections,
+            "frame": frame
+        }
+        
+        # 2. Wrap it in the ModuleData contract
+        module_key = f"{self._node_type_name}_{self.id[:6]}"
+        module_chunk = ModuleData(
+            name=module_key,
+            is_new=True,
+            data=sensor_data
         )
         
-        # Notify pushes it straight into the graph
-        self.notify(payload)
-        
+        # 3. Thread-Safe Handshake: Put the chunk in the queue, DO NOT call self.notify() here!
+        self.data_queue.put({module_key: module_chunk})
+
+    def check_queue(self):
+        """Runs on the UI thread, safely popping data and pushing to the Gateway."""
+        try:
+            while not self.data_queue.empty():
+                chunk = self.data_queue.get_nowait() # chunk is dict: { "Hailo_abc123": ModuleData(...) }
+                
+                module_key = list(chunk.keys())[0]
+                mod_data = chunk[module_key]
+                
+                # Update UI
+                if hasattr(self, 'status_label'):
+                    count = mod_data.data.get('count', 0)
+                    self.status_label.set_text(f"Detections: {count} (Tracked: {self.tracking_enabled})")
+                
+                # Push the module chunk to the InputGateway
+                self.notify(chunk) 
+                
+        except queue.Empty:
+            pass
+
     def get_frame(self):
         """Retrieves the raw camera frame directly from the pipeline tap."""
         if self.pipeline:
@@ -278,26 +364,6 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
         self.pipeline_thread.start()
         self.poll_timer = ui.timer(0.1, self.check_queue)
 
-    def check_queue(self):
-        try:
-            while not self.data_queue.empty():
-                data_json = self.data_queue.get_nowait()
-                data = json.loads(data_json)
-                
-                # Update the UI status label regardless of detection count
-                if hasattr(self, 'status_label'):
-                    self.status_label.set_text(
-                        f"Detections: {data['count']} (Tracked: {self.tracking_enabled})"
-                    )
-                
-                # FIX: Remove "if data['count'] > 0:"
-                # We MUST notify subscribers even if count is 0 so they can 
-                # refresh their views and purge old tracks.
-                self.notify(data_json) 
-                
-        except queue.Empty:
-            pass
-        
     def _stop(self):
         if self.poll_timer: self.poll_timer.cancel()
         

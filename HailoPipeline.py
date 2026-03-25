@@ -121,7 +121,7 @@ class HailoInference:
     def get_inference_str(self):
         # Mandatory function-name=filter for standard TAPPAS libraries
         return (
-            f"hailonet hef-path={self.hef_path} batch-size={self.batch_size} ! "
+            f"hailonet hef-path={self.hef_path} batch-size={self.batch_size} vdevice-group-id=1 ! "
             f"hailofilter so-path={self.post_so_path} function-name=filter ! queue"
         )
 
