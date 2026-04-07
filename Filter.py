@@ -16,7 +16,7 @@ class FilterCondition(ABC):
         self.ui_container = None
 
     @abstractmethod
-    def check(self, detection: Detection) -> bool:
+    def check(self, detection) -> bool:
         """Returns True if the detection passes this condition."""
         pass
 
@@ -42,7 +42,7 @@ class LabelCondition(FilterCondition):
         self.target_label = "person"
         self.exact_match = False
 
-    def check(self, detection: Detection) -> bool:
+    def check(self, detection) -> bool:
         if self.exact_match:
             return detection.label == self.target_label
         return self.target_label.lower() in detection.label.lower()
@@ -66,7 +66,7 @@ class ConfidenceCondition(FilterCondition):
         self.min_conf = 0.5
         self.max_conf = 1.0
 
-    def check(self, detection: Detection) -> bool:
+    def check(self, detection) -> bool:
         return self.min_conf <= detection.confidence <= self.max_conf
 
     def create_ui(self):
@@ -96,7 +96,7 @@ class DimensionsCondition(FilterCondition):
         self.w_range = {'min': 0.0, 'max': 1.0}
         self.h_range = {'min': 0.0, 'max': 1.0}
 
-    def check(self, detection: Detection) -> bool:
+    def check(self, detection) -> bool:
         bbox = detection.bbox # [xmin, ymin, xmax, ymax]
         w = bbox[2] - bbox[0]
         h = bbox[3] - bbox[1]
@@ -128,7 +128,7 @@ class PositionCondition(FilterCondition):
         self.h = 0.5
         self.require_contained = False # True = Whole object must be inside. False = Intersection.
 
-    def check(self, detection: Detection) -> bool:
+    def check(self, detection) -> bool:
         o_xmin, o_ymin, o_xmax, o_ymax = detection.bbox
     
     def create_ui(self):

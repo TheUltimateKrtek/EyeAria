@@ -4,7 +4,8 @@ import time
 import random
 from nicegui import ui
 from Node import Node, NodeRegistry
-from Schema import ModuleData
+from Schema import ModuleData, PipelinePayload
+from typing import Optional
 
 @NodeRegistry.register("MPU-9250 IMU")
 class IMUNode(Node):
@@ -106,6 +107,11 @@ class IMUNode(Node):
                 
         except queue.Empty:
             pass
+    
+    def _input(self, payload: PipelinePayload) -> Optional[PipelinePayload]:
+        # Source nodes don't process incoming payloads, 
+        # but we must implement the abstract method.
+        return None
 
     def _stop(self):
         if self.poll_timer: 
