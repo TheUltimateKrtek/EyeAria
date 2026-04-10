@@ -31,6 +31,9 @@ except ImportError:
         def stop(self): pass
         def get_raw_frame(self): return None
 
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional
+
 @dataclass
 class HailoDetection:
     """1:1 mapping for the objects inside the 'detections' list."""
@@ -38,6 +41,7 @@ class HailoDetection:
     confidence: float
     bbox: List[float]  # [xmin, ymin, xmax, ymax]
     track_id: int = -1
+    tags: List[str] = field(default_factory=list)
 
 @dataclass
 class HailoPayload:
@@ -49,7 +53,7 @@ class HailoPayload:
     pi_uuid: str = ""
     camera_url: str = ""
     detections: List[HailoDetection] = field(default_factory=list)
-    frame: Any = None
+    global_tags: List[str] = field(default_factory=list)
 
     def copy(self) -> 'PipelinePayload':
         """

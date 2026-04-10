@@ -6,6 +6,12 @@ from nicegui import ui
 from Node import Node, NodeRegistry
 from Schema import ModuleData, PipelinePayload
 from typing import Optional
+try:
+    from mpu9250_jmdev.registers import *
+    from mpu9250_jmdev.mpu_9250 import MPU9250
+    HARDWARE_AVAILABLE = True
+except ImportError:
+    HARDWARE_AVAILABLE = False
 
 @NodeRegistry.register("MPU-9250 IMU")
 class IMUNode(Node):
@@ -30,19 +36,43 @@ class IMUNode(Node):
         self.latest_gyro = [0.0, 0.0, 0.0]
 
     def _start(self):
-        # 1. Hardware Initialization would go here
-        # Example: self.sensor = mpu9250.MPU9250(bus=self.i2c_bus, address=int(self.i2c_address, 16))
-        
-        if hasattr(self, 'status_label'):
-            self.status_label.set_text("Status: Reading I2C...")
+        if not HARDWARE_AVAILABLE:
+            if hasattr(self, 'status_label'):
+                self.status_label.set_text("Status: Missing mpu9250-jmdev!")
+            print("[!] MPU9250 library not found. Install with: pip install mpu9250-jmdev")
+            return
 
-        # 2. Launch the high-speed background polling thread
-        self.sensor_thread = threading.Thread(target=self._hardware_loop, daemon=True)
-        self.sensor_thread.start()
-        
-        # 3. Launch the UI synchronizer timer
-        # We poll the UI queue slightly slower than the hardware to batch updates and save CPU
-        self.poll_timer = ui.timer(0.05, self.check_queue)
+        try:
+            # 1. Hardware Initialization
+            # Convert hex string (e.g., "0x68") to actual integer for the library
+            address_int = int(self.i2c_address, 16)
+            
+            self.sensor = MPU9250(
+                address_mpu_master=address_int, 
+                address_ak=AK8963_ADDRESS, 
+                address_mpu_slave=None, 
+                bus=self.i2c_bus,
+                gfs=GFS_1000, 
+                afs=AFS_8G, 
+                mfs=AK8963_BIT_16, 
+                mode=AK8963_MODE_C100HZ
+            )
+            self.sensor.configure()
+            
+            if hasattr(self, 'status_label'):
+                self.status_label.set_text("Status: Reading I2C...")
+
+            # 2. Launch the high-speed background polling thread
+            self.sensor_thread = threading.Thread(target=self._hardware_loop, daemon=True)
+            self.sensor_thread.start()
+            
+            # 3. Launch the UI synchronizer timer
+            self.poll_timer = ui.timer(0.05, self.check_queue)
+            
+        except Exception as e:
+            if hasattr(self, 'status_label'):
+                self.status_label.set_text(f"Status: I2C Error!")
+            print(f"Failed to initialize I2C: {e}")
 
     def _hardware_loop(self):
         """Runs in the background, talking to the I2C bus as fast as configured."""
@@ -51,13 +81,17 @@ class IMUNode(Node):
         while self.running:
             start_time = time.time()
             
-            # --- REPLACE THIS WITH YOUR REAL I2C READS ---
-            # accel = self.sensor.read_accel_data()
-            # gyro = self.sensor.read_gyro_data()
-            accel = [random.uniform(-1.0, 1.0) for _ in range(3)] 
-            gyro = [random.uniform(-5.0, 5.0) for _ in range(3)]
-            temp = 25.0 + random.uniform(-0.5, 0.5)
-            # ---------------------------------------------
+            try:
+                # --- ACTUAL I2C HARDWARE READS ---
+                # The library returns lists of [x, y, z] floats
+                accel = self.sensor.readAccelerometerMaster()
+                gyro = self.sensor.readGyroscopeMaster()
+                temp = self.sensor.readTemperatureMaster()
+            except Exception as e:
+                # If an I2C read fails (loose wire, etc), just skip this tick
+                print(f"I2C Read Error: {e}")
+                time.sleep(delay)
+                continue
 
             # 1. Package the specific sensor data
             sensor_data = {
@@ -82,7 +116,7 @@ class IMUNode(Node):
             elapsed = time.time() - start_time
             sleep_time = max(0, delay - elapsed)
             time.sleep(sleep_time)
-
+            
     def check_queue(self):
         """Runs on the UI thread, pops data, updates UI, and pushes to Gateway."""
         try:

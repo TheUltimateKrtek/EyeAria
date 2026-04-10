@@ -26,21 +26,28 @@ class VideoSource(ABC):
     def get_transform_str(self):
         """Generates the GStreamer videoflip string based on config."""
         transforms = []
-        if self.rotation == 90:
-            transforms.append("videoflip method=clockwise")
-        elif self.rotation == 180:
-            transforms.append("videoflip method=rotate-180")
-        elif self.rotation == 270:
-            transforms.append("videoflip method=counterclockwise")
+        rot = int(self.rotation)
         
+        # Using strict integer enums forces GStreamer to override the camera's 
+        # orientation tags without triggering string parsing crashes.
+        # 1=90r, 2=180, 3=90l
+        if rot == 90:
+            transforms.append("videoflip video-direction=1")
+        elif rot == 180:
+            transforms.append("videoflip video-direction=2")
+        elif rot == 270:
+            transforms.append("videoflip video-direction=3")
+        
+        # 4=horiz, 5=vert
         if self.flip_h:
-            transforms.append("videoflip method=horizontal-flip")
+            transforms.append("videoflip video-direction=4")
         if self.flip_v:
-            transforms.append("videoflip method=vertical-flip")
+            transforms.append("videoflip video-direction=5")
             
         if transforms:
-            # videoconvert is needed around videoflip to ensure format compatibility
-            return " ! videoconvert ! " + " ! ".join(transforms)
+            # We keep the RGBA conversion to prevent the hardware memory lock!
+            return " ! videoconvert ! video/x-raw, format=RGBA ! " + " ! ".join(transforms)
+            
         return ""
 
     @abstractmethod
@@ -149,7 +156,7 @@ class BoxSink(Sink):
 
     def get_sink_str(self):
         return (
-            f"hailooverlay ! videoconvert ! "
+            f"videoconvert ! "
             f"x264enc tune=zerolatency bitrate=5000 speed-preset=ultrafast ! "
             f"h264parse ! matroskamux ! filesink location={self.output_path}"
         )
@@ -260,7 +267,6 @@ class HailoPipeline:
         if tracker_str:
             elements.append(f"{tracker_str}")
 
-        elements.append("hailooverlay")
         elements.append(f"{self.sink.get_sink_str()}")
 
         # Join with ' ! ' only where appropriate
@@ -271,7 +277,6 @@ class HailoPipeline:
             f"t. ! queue leaky=2 max-size-buffers=5 ! {self.adapter.get_adapter_str()} ! "
             f"{inf_str} ! "
             f"{tracker_str + ' ! ' if tracker_str else ''}"
-            f"hailooverlay ! "
             f"{self.sink.get_sink_str()}"
         )
         

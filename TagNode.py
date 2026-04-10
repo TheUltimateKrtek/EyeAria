@@ -4,82 +4,109 @@ from Node import Node, NodeRegistry
 from Schema import PipelinePayload
 
 # ==========================================
-# THE READ-ONLY CONTEXT API
+# THE TAGGER CONTEXT API
 # ==========================================
-class ReadOnlyAPI:
-    """Provides safe, read-only access to the pipeline state without deep copying."""
+class TaggerAPI:
+    """Provides access to persistent memory and helper functions for tagging."""
     def __init__(self, payload: PipelinePayload, memory: dict):
         self._payload = payload
-        self.memory = memory  # Expose the persistent dictionary to the user
+        self.memory = memory
 
     def get_value(self, module_prefix: str, key: str, default=None):
-        """Safely fetches a value from any sensor."""
         for mod_name, mod in self._payload.modules.items():
-            if mod_name.startswith(module_prefix) and isinstance(mod.data, dict):
-                return mod.data.get(key, default)
+            if mod_name.startswith(module_prefix):
+                # Handle both dicts and dataclasses
+                if isinstance(mod.data, dict):
+                    return mod.data.get(key, default)
+                elif hasattr(mod.data, key):
+                    return getattr(mod.data, key)
         return default
 
+    def add_global_tag(self, module_prefix: str, tag: str):
+        """Helper function to easily append a global tag to a specific module."""
+        for mod_name, mod in self._payload.modules.items():
+            if mod_name.startswith(module_prefix):
+                if isinstance(mod.data, dict):
+                    if "global_tags" not in mod.data:
+                        mod.data["global_tags"] = []
+                    if tag not in mod.data["global_tags"]:
+                        mod.data["global_tags"].append(tag)
+                else:
+                    if not hasattr(mod.data, "global_tags"):
+                        mod.data.global_tags = []
+                    if tag not in mod.data.global_tags:
+                        mod.data.global_tags.append(tag)
+
 # ==========================================
-# THE DEFAULT USER PREDICATE
+# THE DEFAULT USER TAGGER SCRIPT
 # ==========================================
-DEFAULT_CODE = """def keep_detection(api, detection) -> bool:
-    # --- Example: Using Memory to track total cars seen ---
-    if "total_cars" not in api.memory:
-        api.memory["total_cars"] = 0
-        
-    if detection.get("label") == "car":
-        api.memory["total_cars"] += 1
-        print(f"Total cars seen this session: {api.memory['total_cars']}")
+DEFAULT_CODE = """def tag_detection(api, detection) -> None:
+    # 1. Setup tag lists (handles both dict and dataclass structures)
+    tags_list = detection.get("tags", []) if isinstance(detection, dict) else getattr(detection, "tags", [])
+    car_id = detection.get("track_id", -1) if isinstance(detection, dict) else getattr(detection, "track_id", -1)
     
-    # Context Check: Is the camera sideways?
-    if api.get_value("IMU", "rotation", 0) > 90:
-        return False # Discard this detection
+    if car_id == -1: return # Ignore untracked objects
         
-    # Detection Check: Is it a high-confidence person?
-    is_person = detection.get("label") == "person"
-    is_confident = detection.get("confidence", 0) > 0.5
-    
-    # Return True to keep, False to discard
-    return is_person and is_confident
+    # 2. Get current X (center of bounding box)
+    bbox = detection.get("bbox") if isinstance(detection, dict) else getattr(detection, "bbox")
+    current_x = bbox[0] + (bbox[2] - bbox[0]) / 2 
+
+    # 3. Initialize memory for new cars
+    if car_id not in api.memory:
+        api.memory[car_id] = {"last_x": current_x}
+
+    # 4. Calculate velocity (dx)
+    dx = current_x - api.memory[car_id]["last_x"]
+
+    # 5. Apply Object Tags & Global Tags
+    if dx > 5:
+        tags_list.append("Moving_Right")
+    elif dx < -5:
+        tags_list.append("Moving_Left")
+        
+        # Example of triggering a global violation if moving left in the bottom lane
+        # api.add_global_tag("Hailo", "Violation_Wrong_Way")
+
+    # 6. Save state for next frame
+    api.memory[car_id]["last_x"] = current_x
 """
 
-@NodeRegistry.register("Filter")
-class FilterNode(Node):
-    node_color = "blue-600"
+@NodeRegistry.register("Tagger")
+class TagNode(Node):
+    node_color = "amber-600"
     has_input = True
     has_output = True
 
     def __init__(self):
         super().__init__()
-        self.width = 400
-        self.height = 380
+        self.width = 450
+        self.height = 420
         self.code_text = DEFAULT_CODE
         self.compiled_func = None
         self.error_msg = ""
-        self.node_memory = {}
+        self.node_memory = {} # <--- Persistent memory dictionary
         self._compile_code()
 
     def _start(self):
-        self.node_memory.clear()
+        self.node_memory.clear() # Reset memory on start
         self._compile_code()
 
     def _stop(self):
-        # The filter node has no background threads or hardware to release.
         if hasattr(self, 'status_label'):
             self.status_label.set_text("Pipeline Stopped")
             self.status_label.classes(replace='text-[10px] font-mono w-full truncate text-slate-500')
 
     def _compile_code(self):
-        self.node_memory.clear()
+        self.node_memory.clear() # Reset memory if code changes
         try:
             local_vars = {}
             exec(self.code_text, {}, local_vars)
             
-            if 'keep_detection' in local_vars:
-                self.compiled_func = local_vars['keep_detection']
+            if 'tag_detection' in local_vars:
+                self.compiled_func = local_vars['tag_detection']
                 self.error_msg = ""
             else:
-                self.error_msg = "Error: Must define 'def keep_detection(api, detection):'"
+                self.error_msg = "Error: Must define 'def tag_detection(api, detection):'"
                 self.compiled_func = None
             self._update_ui()
         except Exception as e:
@@ -104,44 +131,29 @@ class FilterNode(Node):
                 
         dialog.open()
 
+
     def _input(self, payload: PipelinePayload):
         if not self.compiled_func or not payload:
             return payload
 
-        api = ReadOnlyAPI(payload, self.node_memory)
+        api = TaggerAPI(payload, self.node_memory)
         
         for mod_name, mod in payload.modules.items():
-            # 1. Safely extract detections whether data is a dictionary or a dataclass
             detections = None
             if isinstance(mod.data, dict):
                 detections = mod.data.get("detections")
             elif hasattr(mod.data, "detections"):
                 detections = getattr(mod.data, "detections")
 
-            # 2. If we found a detection list, filter it
             if detections is not None:
-                valid_dets = []
                 for det in detections:
                     try:
-                        # Run the user's predicate function
-                        if self.compiled_func(api, det) is True:
-                            valid_dets.append(det)
+                        self.compiled_func(api, det)
                     except Exception as e:
-                        print(f"[Filter Node] Error evaluating detection: {e}")
-                        
-                # 3. Reassign the filtered list AND update the count
-                if isinstance(mod.data, dict):
-                    mod.data["detections"] = valid_dets
-                    mod.data["count"] = len(valid_dets) # <--- UPDATES METADATA
-                else:
-                    setattr(mod.data, "detections", valid_dets)
-                    setattr(mod.data, "count", len(valid_dets)) # <--- UPDATES METADATA
+                        print(f"[Tag Node] Error executing user script: {e}")
 
         return payload
 
-    # ==========================================
-    # UI CONSTRUCTION
-    # ==========================================
     def create_content(self):
         with ui.column().classes('w-full h-full gap-1 p-2 bg-slate-50 border border-slate-200 border-l-4 border-l-blue-500 shadow-sm'):
             
