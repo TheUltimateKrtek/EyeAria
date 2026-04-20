@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  # The PostgreSQL Database
+  postgres:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: eyearia
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # The Main Pipeline Application
+  eyearia:
+    build:
+      context: .
+      dockerfile: Dockerfile.eyearia
+    restart: unless-stopped
+    ports:
+      - "8082:8082"
+    depends_on:
+      - postgres
+    environment:
+      # These match the environment variables expected by PostgresSink.py
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=eyearia
+      - DB_USER=postgres
+      - DB_PASS=postgres
+    # --- HARDWARE ACCESS FOR PI/HAILO ---
+    privileged: true 
+    devices:
+      - "/dev/hailo0:/dev/hailo0"    # Hailo AI accelerator
+      - "/dev/gpiomem:/dev/gpiomem"  # GPIO access
+      - "/dev/i2c-1:/dev/i2c-1"      # I2C (often needed for IMU)
+      - "/dev/video0:/dev/video0"    # Camera input (if using USB/CSI cameras)
+    volumes:
+      # Optional: Mounts your local folder to /app for live code reloading during dev
+      - .:/app  
+
+  # The Streamlit Dashboard
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    depends_on:
+      - postgres
+    environment:
+      # Point Streamlit to the Docker PostgreSQL container
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=eyearia
+      - DB_USER=postgres
+      - DB_PASS=postgres
+
+volumes:
+  pgdata: # Persistent storage for PostgreSQL

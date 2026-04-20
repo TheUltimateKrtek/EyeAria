@@ -1,0 +1,24 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install system dependencies (C++ std libs are required for HailoRT)
+RUN apt-get update && apt-get install -y \
+    gcc g++ \
+    libpq-dev \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy your requirements AND the Hailo wheel file
+COPY requirements.txt .
+COPY hailort-X.X.X-cp310-cp310-linux_x86_64.whl . 
+
+# Install dependencies including Hailo
+RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install hailort-X.X.X-cp310-cp310-linux_x86_64.whl
+
+COPY . .
+
+EXPOSE 8082
+CMD ["python", "EyeAria.py"]
