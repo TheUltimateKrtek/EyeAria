@@ -236,10 +236,8 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
                 dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith('.')]
                 
                 for f in files:
-                    if f.endswith('.hef'): 
+                    if f.endswith('.hef') and f.startswith('yolov8'): 
                         self.__class__._scan_cache['hef'].append(os.path.join(root, f))
-                    elif f.endswith('.so'): 
-                        self.__class__._scan_cache['so'].append(os.path.join(root, f))
         except Exception as e:
             print(f"File scan interrupted: {e}")
             
@@ -435,12 +433,6 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
                 ui.input(label="HEF File").bind_value(self, 'hef_path').classes('grow text-xs').props('dense')
                 ui.button(icon='search', on_click=lambda: self.show_search_dialog('hef_path', 'hef')) \
                     .props('flat round dense color=blue size=sm')
-
-            # SO Search Row
-            with ui.row().classes('w-full items-center gap-1 no-wrap'):
-                ui.input(label="Post-Proc (.so)").bind_value(self, 'so_path').classes('grow text-xs').props('dense')
-                ui.button(icon='search', on_click=lambda: self.show_search_dialog('so_path', 'so')) \
-                    .props('flat round dense color=blue size=sm')
             
             # Start the background scan silently on boot
             self.trigger_system_scan()
@@ -460,22 +452,19 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
         with ui.row().classes('w-full items-center justify-between px-2'):
             self.status_label = ui.label("Status: Idle").classes("text-[10px] text-slate-500 font-mono")
 
-
     def show_search_dialog(self, target_attr, file_type):
-        """Displays a live, searchable dialog for cached files."""
+        """Displays a live, searchable dialog for cached files with smart descriptions."""
         with ui.dialog() as dialog, ui.card().classes('w-[32rem] h-[32rem] p-4'):
-            # Force a strict vertical column for the whole card
             with ui.column().classes('w-full h-full gap-2 no-wrap'):
                 with ui.row().classes('w-full items-center justify-between'):
                     with ui.row().classes('items-center gap-2'):
-                        ui.label(f"SEARCH {file_type.upper()} FILES").classes('text-[12px] font-bold text-slate-700')
-                        # Refresh button moved here
+                        ui.label(f"YOLOv8 model").classes('text-[12px] font-bold text-slate-700')
                         ui.button(icon='refresh', on_click=lambda: (self.trigger_system_scan(force=True), update_results())) \
-                            .props('flat round dense size=xs color=slate').tooltip('Force Re-scan')
+                            .props('flat round dense size=xs color=slate').tooltip('Vynutit re-sken')
                             
                     status_label = ui.label().classes('text-[10px] text-blue-500 italic font-bold')
                 
-                search_input = ui.input('Type to filter by filename or path...', 
+                search_input = ui.input('Filter...', 
                                         on_change=lambda e: update_results(e.value)) \
                     .classes('w-full text-xs').props('clearable dense autofocus')
                 
@@ -486,51 +475,66 @@ class HailoNode(Node, HailoListener): # Inherit from Listener
                     results_container.clear()
                     query = query.lower() if query else ""
                     
-                    # Copy the list to prevent thread-mutation errors while looping
                     all_files = list(self.__class__._scan_cache[file_type])
+                    all_files = [f for f in all_files if 'yolov8' in os.path.basename(f).lower()]
+                    
                     filtered = [f for f in all_files if query in f.lower()]
                     display_files = filtered[:100]
                     
                     with results_container:
                         if not display_files:
-                            msg = "Scanning drive..." if self.__class__._is_scanning else "No matches found."
+                            msg = "Searching..." if self.__class__._is_scanning else "No YOLOv8 models found."
                             ui.label(msg).classes('text-[10px] text-slate-500 italic p-2')
                         
                         for f in display_files:
                             filename = os.path.basename(f)
                             dir_path = os.path.dirname(f)
                             
+                            # Generování popisků na základě názvu souboru
+                            desc_parts = []
+                            if "n.hef" in filename or "n_" in filename: desc_parts.append("Nano (Fastest, lowest accuracy)")
+                            elif "s.hef" in filename or "s_" in filename: desc_parts.append("Small (Balanced speed and accuracy)")
+                            elif "m.hef" in filename or "m_" in filename: desc_parts.append("Medium (Slower, high accuracy)")
+                            elif "l.hef" in filename or "l_" in filename: desc_parts.append("Large (Very slow, highest accuracy)")
+                            
+                            if "h8l" in filename: desc_parts.append("Optimized for Hailo-8L")
+                            if "cls" in filename: desc_parts.append("Classification")
+                            elif "seg" in filename: desc_parts.append("Segmentation")
+                            elif "pose" in filename: desc_parts.append("Pose Detection")
+                            else: desc_parts.append("Object Detection (Classification)")
+                            
+                            desc_text = " | ".join(desc_parts) if desc_parts else "YOLOv8 Model"
+                            
                             with ui.button(on_click=lambda f=f: select_file(f)) \
                                 .props('flat align=left size=sm color=slate no-caps') \
                                 .classes('w-full py-1 border-b border-slate-200'):
-                                # FIX: The internal column forces the text to stack vertically
                                 with ui.column().classes('w-full gap-0 items-start'):
                                     ui.label(filename).classes('font-bold text-blue-600 text-[11px] leading-tight')
+                                    ui.label(desc_text).classes('text-[10px] text-emerald-600 font-semibold leading-tight')
                                     ui.label(dir_path).classes('text-[9px] text-slate-400 break-all leading-tight')
                                 
                         if len(filtered) > 100:
-                            ui.label(f"... and {len(filtered) - 100} more unseen files. Keep typing to refine search.") \
+                            ui.label(f"... and {len(filtered) - 100} more files. Keep typing to refine the search.") \
                                 .classes('text-[10px] text-orange-500 italic p-2 text-center w-full')
 
-                    # Update top right status text
+                    # Aktualizace stavového textu
                     if self.__class__._is_scanning:
-                        status_label.set_text(f"Scanning... ({len(all_files)} found)")
+                        status_label.set_text(f"Skenuji... ({len(all_files)} nalezeno)")
                     else:
-                        status_label.set_text(f"Scan Complete ({len(all_files)} total)")
+                        status_label.set_text(f"Skenování dokončeno ({len(all_files)} celkem)")
 
                 def select_file(f):
                     setattr(self, target_attr, f)
                     dialog.close()
 
                 update_results()
-                ui.button('CANCEL', on_click=dialog.close).props('flat color=grey size=xs').classes('w-full mt-auto')
+                ui.button('ZRUŠIT', on_click=dialog.close).props('flat color=grey size=xs').classes('w-full mt-auto')
 
-                # Automatically refresh the results if the background scan is still running
                 def auto_refresh():
                     if self.__class__._is_scanning:
                         update_results()
                     else:
-                        update_results() # Final update
+                        update_results()
                         refresh_timer.deactivate()
                         
                 refresh_timer = ui.timer(1.0, auto_refresh)
