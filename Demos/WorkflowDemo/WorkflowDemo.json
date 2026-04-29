@@ -1,0 +1,93 @@
+{
+  "viewport": {
+    "pan_x": 0,
+    "pan_y": 2,
+    "zoom": 1.0
+  },
+  "root": {
+    "type": "Input Gateway",
+    "id": "0ad657d4-99dc-4d80-beaa-b3ab0c3c7aaa",
+    "x": 402.0,
+    "y": 300.0,
+    "width": 288,
+    "height": 126,
+    "collapsed": false,
+    "subscribers": [
+      {
+        "type": "Visualizer",
+        "id": "6dbe647a-f226-4f71-96c8-20a901c9858c",
+        "x": 840.0,
+        "y": 452.0,
+        "width": 288,
+        "height": 443,
+        "collapsed": false,
+        "subscribers": [],
+        "target_module": "Hailo_3c7f23"
+      },
+      {
+        "type": "Tagger",
+        "id": "e063afad-9c4e-4c65-9a3f-5e56b947a850",
+        "x": 829.0,
+        "y": 64.0,
+        "width": 288,
+        "height": 285,
+        "collapsed": false,
+        "subscribers": [
+          {
+            "type": "Programmable LED",
+            "id": "a0944811-d500-406c-ab71-b42ada8fa01e",
+            "x": 1206.0,
+            "y": 46.0,
+            "width": 288,
+            "height": 353,
+            "collapsed": false,
+            "subscribers": [],
+            "code_text": "def led_loop(api, pixels, memory, current_time, is_new_frame) -> None:\n    # 1. Setup variables\n    if \"flash_toggle\" not in memory:\n        memory[\"flash_toggle\"] = False\n        memory[\"last_flash\"] = current_time\n        memory[\"state\"] = \"IDLE\"\n        memory[\"elapsed\"] = 0.0\n\n    if current_time - memory[\"last_flash\"] > 0.5:\n        memory[\"flash_toggle\"] = not memory[\"flash_toggle\"]\n        memory[\"last_flash\"] = current_time\n\n    # 2. Read the Tags from the Tagger\n    if is_new_frame and api:\n        global_tags = api.get_value(\"Hailo\", \"global_tags\", [])\n        for tag in global_tags:\n            if tag.startswith(\"STATE:\"):\n                memory[\"state\"] = tag.split(\":\")[1]\n            elif tag.startswith(\"TIME:\"):\n                try:\n                    memory[\"elapsed\"] = float(tag.split(\":\")[1])\n                except ValueError:\n                    pass\n\n    state = memory[\"state\"]\n    elapsed = memory[\"elapsed\"]\n    num_pixels = len(pixels) # Dynamically checks if you have 12, 16, or 24 LEDs!\n\n    # 3. Erase the ring every frame before drawing the new clock\n    pixels.fill((0, 0, 0))\n\n    # 4. Draw the Clock Output\n    if state == \"WORK_OK\":\n        # Calculate how many LEDs to light up (0 to 15 seconds)\n        fill_count = int((elapsed / 15.0) * num_pixels)\n        for i in range(min(fill_count, num_pixels)):\n            pixels[i] = (50, 50, 50) # Dim White\n\n    elif state == \"WORK_VIOLATION\":\n        if memory[\"flash_toggle\"]: pixels.fill((255, 0, 0)) # Flash Red\n\n    elif state == \"WORK_OVER\":\n        if memory[\"flash_toggle\"]: pixels.fill((0, 255, 0)) # Flash Green (Time to leave!)\n\n    elif state == \"BREAK_OK\":\n        # Calculate how many LEDs to light up (0 to 5 seconds)\n        fill_count = int((elapsed / 5.0) * num_pixels)\n        for i in range(min(fill_count, num_pixels)):\n            pixels[i] = (0, 255, 0) # Green\n\n    elif state == \"BREAK_VIOLATION\":\n        if memory[\"flash_toggle\"]: pixels.fill((255, 0, 0)) # Flash Red (Get away from desk!)\n\n    elif state == \"BREAK_OVER\":\n        # Flash Green (Time to work!)\n        if memory[\"flash_toggle\"]: pixels.fill((0, 255, 0)) \n\n    # Push to hardware\n    pixels.show()",
+            "brightness": 0.1,
+            "pin_number": 18
+          },
+          {
+            "type": "Tiny OLED Screen",
+            "id": "567f5f63-955e-43f5-be90-f394de684524",
+            "x": 1214.0,
+            "y": 437.0,
+            "width": 288,
+            "height": 407,
+            "collapsed": false,
+            "subscribers": [],
+            "target_ip": "127.0.0.1",
+            "target_port": 8080,
+            "fps_limit": 10,
+            "mirror_x": false,
+            "code_text": "def oled_draw(api, draw, memory, current_time, is_new_frame):\n    # 1. Initialize Memory\n    if \"state\" not in memory:\n        memory[\"state\"] = \"IDLE\"\n        memory[\"elapsed\"] = \"0.0\"\n\n    # 2. Extract Data from the Tagger\n    if is_new_frame and api:\n        tags = api.get_value(\"Hailo\", \"global_tags\", [])\n        for tag in tags:\n            if tag.startswith(\"STATE:\"):\n                memory[\"state\"] = tag.split(\":\")[1]\n            elif tag.startswith(\"TIME:\"):\n                memory[\"elapsed\"] = tag.split(\":\")[1]\n\n    state = memory[\"state\"]\n    elapsed = memory[\"elapsed\"]\n\n    # 3. Map States to Text\n    if state == \"WORK_OK\":\n        msg1, msg2 = \"FOCUS MODE\", f\"{elapsed}s / 15s\"\n    elif state == \"WORK_VIOLATION\":\n        msg1, msg2 = \"WHERE DID\", \"YOU GO?\"\n    elif state == \"WORK_OVER\":\n        msg1, msg2 = \"WORK DONE!\", \"Take a break.\"\n    elif state == \"BREAK_OK\":\n        msg1, msg2 = \"RELAXING...\", f\"{elapsed}s / 5s\"\n    elif state == \"BREAK_VIOLATION\":\n        msg1, msg2 = \"STEP AWAY!\", \"Rest your eyes.\"\n    elif state == \"BREAK_OVER\":\n        msg1, msg2 = \"BREAK OVER\", \"Time to work.\"\n    else:\n        msg1, msg2 = \"WAITING FOR\", \"CAMERA...\"\n\n    # 4. Draw to the OLED (X, Y coords)\n    draw.text((10, 15), msg1, fill=1)\n    draw.text((10, 35), msg2, fill=1)"
+          }
+        ],
+        "code_text": "def tag_detection(api, detections, memory, current_time):\n    # 1. State Initialization\n    if \"on_break\" not in memory:\n        memory[\"on_break\"] = False\n        memory[\"state_start\"] = current_time\n\n    # 2. Safely check if a person is anywhere in the frame\n    person_present = any(\n        (d.get(\"label\") if isinstance(d, dict) else getattr(d, \"label\", \"\")) == \"person\" \n        for d in detections\n    )\n\n    # 3. Calculate elapsed time\n    elapsed = current_time - memory[\"state_start\"]\n    \n    # Broadcast the exact time to the pipeline (rounded to 1 decimal)\n    api.add_global_tag(\"Hailo\", f\"TIME:{elapsed:.1f}\")\n\n    # 4. Work/Break Logic\n    if memory[\"on_break\"]:\n        if elapsed < 5.0: # 5 second break\n            if person_present:\n                api.add_global_tag(\"Hailo\", \"STATE:BREAK_VIOLATION\")\n            else:\n                api.add_global_tag(\"Hailo\", \"STATE:BREAK_OK\")\n        else:\n            api.add_global_tag(\"Hailo\", \"STATE:BREAK_OVER\")\n            if person_present: # You returned!\n                memory[\"on_break\"] = False\n                memory[\"state_start\"] = current_time\n                \n    else: # Working\n        if elapsed < 15.0: # 15 second work session\n            if not person_present:\n                api.add_global_tag(\"Hailo\", \"STATE:WORK_VIOLATION\")\n            else:\n                api.add_global_tag(\"Hailo\", \"STATE:WORK_OK\")\n        else:\n            api.add_global_tag(\"Hailo\", \"STATE:WORK_OVER\")\n            if not person_present: # You left!\n                memory[\"on_break\"] = True\n                memory[\"state_start\"] = current_time"
+      }
+    ],
+    "input_nodes": [
+      {
+        "type": "Hailo",
+        "id": "3c7f233b-beee-4c8f-9b75-3f8a722e0ef6",
+        "x": 73.0,
+        "y": 300.0,
+        "width": 288,
+        "height": 535,
+        "collapsed": false,
+        "subscribers": [],
+        "source_type": "Camera",
+        "source_path": "detection0.mp4",
+        "camera_index": 0,
+        "camera_resolution_str": "1536,864,120",
+        "rotation": 180,
+        "flip_h": false,
+        "flip_v": false,
+        "hef_path": "/home/nightshadearia/EyeAria/tests/benchmark/yolov8m_h8l.hef",
+        "so_path": "/home/nightshadearia/EyeAria/libyolo_hailortpp_post.so",
+        "tracking_enabled": false,
+        "keep_tracked_frames": 30,
+        "keep_lost_frames": 10
+      }
+    ]
+  }
+}

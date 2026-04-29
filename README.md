@@ -203,3 +203,38 @@ EyeAria obsahuje modulární sadu uzlů. Zde je přehled jejich funkčnosti a ko
 
 * **Logger:** Vypisuje informace do systémového terminálu (konzole).
   * *Logger Settings:* Přepínač formátu logování mezi stručným výpisem (`Summary` - vypíše jen počet detekcí) a kompletním stromem (`Full JSON`).
+
+## Ukázkové Workflow: AI Pomodoro asistent (WorkflowDemo.json)
+
+Soubor `WorkflowDemo.json` obsahuje předpřipravený datový tok, který funguje jako chytrý asistent pro dodržování pracovního režimu a přestávek. Využívá kameru a AI ke sledování toho, zda fyzicky sedíte u svého stolu.
+
+### Architektura dema
+Systém se skládá z následujících logických kroků a uzlů:
+
+* **Hailo (Vstupní kamera):** Čte obraz z připojené kamery, automaticky jej rotuje o 180° a pomocí detekčního modelu YOLOv8 odesílá metadata o objektech v obraze dále do systému.
+* **Tagger (Hlavní logika):** Mozek celého dema. Analyzuje zachycená data a hledá štítek `person`. Pokud osobu detekuje, počítá uběhlý čas. Pracovní úsek je zde pro rychlou ukázku zkrácen na 15 sekund a přestávka na 5 sekund. Uzel následně generuje globální události do paměti, jako např. `STATE:WORK_OK` (vše v pořádku) nebo `STATE:BREAK_VIOLATION` (pracujete přesčas).
+* **Programmable LED:** Přijímá výstupy z Taggeru a vizualizuje čas pomocí připojeného LED pásku. Během práce se pásek postupně rozsvěcuje tlumenou bílou barvou, při přestávce naopak zelenou. Pokud režim porušíte (např. odejdete od stolu příliš brzy během práce), pásek vás upozorní červeným blikáním. Softwarově je uzel připojen na PIN 18 a jeho celkový jas je ztlumen na 10 % (0.1).
+* **Tiny OLED Screen:** Slouží jako doplňkový informační displej. Na základě stavu generuje kontextové zprávy (např. "FOCUS MODE", "RELAXING...", "WHERE DID YOU GO?"). Komunikace z tohoto uzlu odchází přes síťové rozhraní na localhost IP `127.0.0.1` a port `8080`.
+* **Visualizer:** Běží v uživatelském rozhraní a živě vykresluje bounding boxy detekované z uzlu Hailo.
+
+### Jak zapojit hardware na Raspberry Pi
+Pro správný běh tohoto konkrétního dema je nutné fyzicky zapojit hardware následujícím způsobem:
+
+#### Kamera a AI Hailo:
+
+Připojte kameru přes USB nebo CSI. Kontejnerová aplikace k ní má díky Docker konfiguraci nativní přístup (typicky přes /dev/video0).
+
+Ujistěte se, že máte v M.2 nebo PCIe slotu připojený AI akcelerátor Hailo a nainstalované jeho základní knihovny na hostitelském RPi.
+
+#### Programovatelný LED pásek/kruh (NeoPixel):
+
+Datový PIN: Připojte řídící drát z LED pásku na GPIO 18 (což odpovídá fyzickému Pinu 12 na desce RPi).
+
+GND: Propojte zem (GND) pásku s jakýmkoliv GND pinem na Raspberry Pi.
+
+Napájení (5V): Doporučuji použít nezávislý externí zdroj napájení na 5V. V případě zapojování do 5V pinů samotného RPi buďte maximálně opatrní, RPi by mohlo při vyšším jasu/počtu LED shořet.
+
+Docker běží v módu privileged: true, takže uzel pro ovládání LED diod získá ke /dev/gpiomem hardwarový přístup rovnou z aplikace a bude fungovat.
+
+## Wiring diagram
+![Wiring Diagram](Demos/WorkflowDemo/WorkflowDemoWiring.png)

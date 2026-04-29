@@ -3,8 +3,7 @@ streamlit
 pandas
 psycopg2-binary
 plotly
-# You will likely need to add the following based on your node files:
-# opencv-python-headless
-# paho-mqtt
-# adafruit-circuitpython-neopixel
-# hailo-related libraries
+opencv-python-headless
+paho-mqtt
+adafruit-circuitpython-ssd1306
+Pillow
